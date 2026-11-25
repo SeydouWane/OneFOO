@@ -144,7 +144,7 @@
    * @returns {boolean} true si le salon est désormais vide (à supprimer)
    */
   function leave(room, pid, onPlayingLeave) {
-    if (room.voice) delete room.voice[pid];
+    stopVoice(room, pid);
     const idx = room.players.findIndex((p) => p.id === pid);
     if (idx === -1) return humans(room).length === 0;
     const p = room.players[idx];
@@ -167,6 +167,12 @@
     return false;
   }
 
+  /** Micro coupé : plus de voix ni de piste audio publiée (relais Cloudflare). */
+  function stopVoice(room, pid) {
+    if (room.voice) delete room.voice[pid];
+    if (room.voiceTracks) delete room.voiceTracks[pid];
+  }
+
   function touch(room, pid, now) {
     const p = player(room, pid);
     if (p && !p.isBot) p.lastSeen = now;
@@ -178,7 +184,7 @@
     const gone = room.players.filter((p) => !p.isBot && now - p.lastSeen > LOBBY_DROP_MS);
     for (const p of gone) {
       room.players.splice(room.players.indexOf(p), 1);
-      if (room.voice) delete room.voice[p.id];
+      stopVoice(room, p.id);
       notice(room, `${p.name} a quitté le salon`);
     }
     if (gone.length) fixHost(room);
@@ -248,9 +254,15 @@
         }
         return { handled: true };
       case 'voice':
+        if (!data.on) {
+          stopVoice(room, pid);
+          return { handled: true };
+        }
         room.voice = room.voice || {};
-        if (data.on) room.voice[pid] = now;
-        else delete room.voice[pid];
+        room.voice[pid] = now;
+        // piste publiée sur le relais audio : { s: session, t: nom } — fournie par le serveur, jamais par le client
+        room.voiceTracks = room.voiceTracks || {};
+        if (data.sfu && data.sfu.s && data.sfu.t) room.voiceTracks[pid] = { s: String(data.sfu.s), t: String(data.sfu.t) };
         return { handled: true };
       default:
         return { handled: false };
@@ -306,6 +318,8 @@
           connected: p.isBot || now - p.lastSeen < OFFLINE_AFTER_MS,
           wins: room.scores[p.id] || 0,
           mic: !!(room.voice && room.voice[p.id]),
+          // nom de la piste audio publiée (la session reste côté serveur)
+          vt: (room.mode === 'friends' && room.voice && room.voice[p.id] && room.voiceTracks && room.voiceTracks[p.id] && room.voiceTracks[p.id].t) || null,
         })),
         turnDeadline: room.turnDeadline,
         turnMs: TURN_MS,

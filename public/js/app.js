@@ -460,6 +460,42 @@
       finish(needRelay ? 4000 : 2500); // filet de sécurité
     });
   }
+  /** Après setLocalDescription : attend l'adresse publique (ou la fin de la collecte), 2,5 s au plus. */
+  function gatherDone(pc, ms = 2500) {
+    if (pc.iceGatheringState === 'complete') return Promise.resolve();
+    return new Promise((resolve) => {
+      let t = null;
+      const done = () => {
+        clearTimeout(t);
+        pc.removeEventListener('icegatheringstatechange', onState);
+        pc.removeEventListener('icecandidate', onCand);
+        resolve();
+      };
+      const onState = () => pc.iceGatheringState === 'complete' && done();
+      const onCand = (e) => {
+        if (!e.candidate) return done();
+        if (/ typ (srflx|relay)/.test(e.candidate.candidate || '')) {
+          clearTimeout(t);
+          t = setTimeout(done, 300);
+        }
+      };
+      pc.addEventListener('icegatheringstatechange', onState);
+      pc.addEventListener('icecandidate', onCand);
+      t = setTimeout(done, ms);
+    });
+  }
+  function waitConnected(pc, ms) {
+    if (pc.connectionState === 'connected') return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const t = setTimeout(() => resolve(false), ms);
+      pc.addEventListener('connectionstatechange', function on() {
+        if (pc.connectionState !== 'connected') return;
+        clearTimeout(t);
+        pc.removeEventListener('connectionstatechange', on);
+        resolve(true);
+      });
+    });
+  }
 
   const voice = {
     micOn: false,
@@ -476,12 +512,20 @@
     iceServers: null,
     icePromise: null,
     meterTimer: null,
+    // 'sfu' : chacun se connecte au relais Cloudflare ; 'mesh' : liaison directe entre téléphones (secours)
+    mode: null,
+    sfu: null,
+    sfuRetryAt: 0,
     wants() {
       return this.micOn || this.active;
     },
     /** Mise en relation en cours : on rafraîchit plus vite (pendant 20 s au plus). */
     negotiating() {
-      const pending = this.active && (!this.peers.size || [...this.peers.values()].some((p) => p.pc.connectionState !== 'connected'));
+      const s = this.sfu;
+      const pending =
+        this.mode === 'sfu'
+          ? this.active && (!s || s.pc.connectionState !== 'connected' || s.pending.size > 0 || s.publishing)
+          : this.active && (!this.peers.size || [...this.peers.values()].some((p) => p.pc.connectionState !== 'connected'));
       if (!pending) {
         this.pendingSince = 0;
         return false;
@@ -497,7 +541,10 @@
       if (this.iceServers) return Promise.resolve(this.iceServers);
       if (!this.icePromise) {
         this.icePromise = request('GET', null, '?ice=1')
-          .then((r) => (this.iceServers = (r && r.iceServers && r.iceServers.length && r.iceServers) || DEFAULT_ICE))
+          .then((r) => {
+            this.mode = r && r.sfu ? 'sfu' : 'mesh';
+            return (this.iceServers = (r && r.iceServers && r.iceServers.length && r.iceServers) || DEFAULT_ICE);
+          })
           .catch(() => {
             this.icePromise = null;
             return DEFAULT_ICE;
@@ -537,10 +584,12 @@
         for (const p of this.peers.values()) this.applyTrack(p.pc);
         this.startMeter();
         await api('voice', { on: true });
+        if (this.mode === 'sfu') this.sfuPublish();
         this.busy = false;
         toast('🎙️ Micro activé : vos amis vous entendent', 'good');
       } else {
         this.stopMic();
+        if (this.mode === 'sfu') this.sfuUnpublish();
         await api('voice', { on: false });
       }
       renderMic();
@@ -570,6 +619,11 @@
       }
       this.active = room.players.some((p) => p.mic && !p.isBot && p.id !== playerId) || this.micOn;
       if (!this.active) return this.closeAll();
+      if (!this.mode) return; // en attente de la configuration du serveur (relais ou liaison directe)
+      if (this.mode === 'sfu') {
+        this.sfuSync(room, mine);
+        return this.startMeter();
+      }
       const others = room.players.filter((p) => !p.isBot && p.id !== playerId && p.connected);
       const ids = new Set(others.map((p) => p.id));
       for (const id of [...this.peers.keys()]) if (!ids.has(id)) this.close(id);
@@ -615,6 +669,7 @@
       }
     },
     async onSignal(s) {
+      if (this.mode === 'sfu') return; // liaison directe inutilisée : tout passe par le relais
       try {
         if (s.type === 'offer') {
           const servers = await this.loadIce();
@@ -694,12 +749,168 @@
       const unlock = () => {
         this.unlockArmed = false;
         window.removeEventListener('pointerdown', unlock, true);
-        for (const p of this.peers.values()) if (p.audio && p.audio.paused) p.audio.play().catch(() => {});
+        for (const [, p] of this.listeners()) if (p.audio && p.audio.paused) p.audio.play().catch(() => {});
       };
       window.addEventListener('pointerdown', unlock, true);
     },
+    /** Les voix reçues, quel que soit le mode : [idJoueur, { audio, an }]. */
+    listeners() {
+      return this.mode === 'sfu' && this.sfu ? this.sfu.remotes : this.peers;
+    },
     closeAll() {
       for (const id of [...this.peers.keys()]) this.close(id);
+      this.sfuTeardown();
+    },
+
+    // ---------------------------------------------------------------- relais Cloudflare (SFU)
+    sfuCall(op, data = {}) {
+      return request('POST', { action: 'sfu', code: net.code, op, ...data }).then((r) => {
+        if (!r || !r.ok) throw new Error((r && r.error) || 'relais audio');
+        return r;
+      });
+    },
+    /** Le relais exige que les changements d'une session se fassent l'un après l'autre. Erreur = on refait tout. */
+    sfuQueue(s, fn) {
+      s.queue = s.queue
+        .then(() => (this.sfu === s ? fn() : null))
+        .catch((err) => {
+          console.warn('[voix]', err && err.message);
+          this.sfuFail(s);
+        });
+      return s.queue;
+    },
+    sfuStart() {
+      const pc = new RTCPeerConnection({ iceServers: this.iceServers || DEFAULT_ICE, bundlePolicy: 'max-bundle' });
+      const s = { pc, queue: Promise.resolve(), ready: false, pub: null, publishing: false, announced: 0, remotes: new Map(), mids: new Map(), pending: new Set(), retryAt: new Map(), discTimer: null };
+      this.sfu = s;
+      pc.ontrack = (e) => {
+        const pid = s.mids.get(e.transceiver && e.transceiver.mid);
+        const r = pid && s.remotes.get(pid);
+        // une piste = un flux (le relais peut regrouper plusieurs pistes dans un même flux)
+        if (r) this.attach(r, new MediaStream([e.track]));
+      };
+      pc.onconnectionstatechange = () => {
+        if (this.sfu !== s) return;
+        clearTimeout(s.discTimer);
+        if (pc.connectionState === 'connected') this.failures.delete('sfu');
+        if (pc.connectionState === 'failed') this.sfuFail(s);
+        // « déconnecté » est souvent passager (changement de réseau) : 8 s de patience
+        if (pc.connectionState === 'disconnected') s.discTimer = setTimeout(() => pc.connectionState === 'disconnected' && this.sfuFail(s), 8000);
+      };
+      this.sfuQueue(s, async () => {
+        await this.sfuCall('session');
+        s.ready = true;
+      });
+    },
+    sfuFail(s) {
+      if (this.sfu !== s) return;
+      this.sfuTeardown();
+      this.sfuRetryAt = Date.now() + 3000;
+      const n = (this.failures.get('sfu') || 0) + 1;
+      this.failures.set('sfu', n);
+      if (n === 2) toast('🎙️ Liaison audio perdue, reconnexion…', 'bad');
+    },
+    sfuTeardown() {
+      const s = this.sfu;
+      if (!s) return;
+      this.sfu = null;
+      clearTimeout(s.discTimer);
+      for (const [pid, r] of s.remotes) this.sfuDropRemote(pid, r);
+      try {
+        s.pc.close();
+      } catch {}
+    },
+    sfuDropRemote(pid, r) {
+      if (r.audio) r.audio.remove();
+      const el = oppEls.get(pid);
+      if (el) el.classList.remove('talking');
+    },
+    sfuSync(room, mine) {
+      if (!this.sfu) {
+        if (Date.now() < this.sfuRetryAt) return;
+        this.sfuStart();
+      }
+      const s = this.sfu;
+      if (this.micOn && !s.pub && !s.publishing) this.sfuPublish();
+      // piste publiée mais pas (encore) annoncée dans le salon : on l'annonce de nouveau
+      if (this.micOn && s.pub && mine && mine.vt !== s.pub.name && Date.now() - s.announced > 5000) {
+        s.announced = Date.now();
+        api('voice', { on: true, track: s.pub.name });
+      }
+      const want = new Map(room.players.filter((p) => !p.isBot && p.id !== playerId && p.connected && p.mic && p.vt).map((p) => [p.id, p.vt]));
+      for (const [pid, r] of [...s.remotes]) if (want.get(pid) !== r.key) this.sfuUnpull(pid);
+      const now = Date.now();
+      for (const [pid] of want) {
+        if (!s.remotes.has(pid) && !s.pending.has(pid) && now >= (s.retryAt.get(pid) || 0)) this.sfuPull(pid);
+      }
+    },
+    /** Publie le micro. Nouvelle piste à chaque allumage : le relais efface une piste muette au bout de 30 s. */
+    sfuPublish() {
+      if (!this.sfu) this.sfuStart();
+      const s = this.sfu;
+      if (s.publishing || s.pub) return;
+      s.publishing = true;
+      this.sfuQueue(s, async () => {
+        const track = this.track();
+        if (!s.ready || !track || !this.micOn) return;
+        const name = 'a' + Math.random().toString(36).slice(2, 12);
+        const tr = s.pc.addTransceiver(track, { direction: 'sendonly' });
+        await s.pc.setLocalDescription(await s.pc.createOffer());
+        await gatherDone(s.pc);
+        const r = await this.sfuCall('push', { sdp: s.pc.localDescription.sdp, mid: tr.mid, track: name });
+        await s.pc.setRemoteDescription({ type: 'answer', sdp: r.sdp });
+        s.pub = { tr, name };
+        await waitConnected(s.pc, 8000);
+        if (this.sfu === s && this.micOn) {
+          s.announced = Date.now();
+          await api('voice', { on: true, track: name });
+        }
+      }).finally(() => (s.publishing = false));
+    },
+    sfuUnpublish() {
+      const s = this.sfu;
+      if (!s) return;
+      this.sfuQueue(s, async () => {
+        const pub = s.pub;
+        s.pub = null;
+        if (!pub) return;
+        await pub.tr.sender.replaceTrack(null).catch(() => {});
+        await this.sfuCall('close', { mids: [pub.tr.mid] }).catch(() => {});
+      });
+    },
+    /** Reçoit la voix d'un joueur : le relais propose, le téléphone accepte. */
+    sfuPull(pid) {
+      const s = this.sfu;
+      s.pending.add(pid);
+      this.sfuQueue(s, async () => {
+        if (!s.ready) return;
+        let r;
+        try {
+          r = await this.sfuCall('pull', { from: pid });
+        } catch {
+          s.retryAt.set(pid, Date.now() + 6000); // piste pas (encore) disponible : on réessaiera
+          return;
+        }
+        s.mids.set(r.mid, pid);
+        s.remotes.set(pid, { key: r.track, mid: r.mid, audio: null, an: null });
+        if (r.sdp && r.type === 'offer') {
+          await s.pc.setRemoteDescription({ type: 'offer', sdp: r.sdp });
+          await s.pc.setLocalDescription(await s.pc.createAnswer());
+          await gatherDone(s.pc);
+          await this.sfuCall('answer', { sdp: s.pc.localDescription.sdp });
+        }
+      }).finally(() => s.pending.delete(pid));
+    },
+    sfuUnpull(pid) {
+      const s = this.sfu;
+      const r = s.remotes.get(pid);
+      if (!r) return;
+      s.remotes.delete(pid);
+      s.mids.delete(r.mid);
+      this.sfuDropRemote(pid, r);
+      this.sfuQueue(s, async () => {
+        if (s.ready) await this.sfuCall('close', { mids: [r.mid] }).catch(() => {});
+      });
     },
     shutdown() {
       this.closeAll();
@@ -711,7 +922,7 @@
     startMeter() {
       if (this.meterTimer) return;
       this.meterTimer = setInterval(() => {
-        for (const [id, p] of this.peers) {
+        for (const [id, p] of this.listeners()) {
           const el = oppEls.get(id);
           if (el) el.classList.toggle('talking', !!p.an && rms(p.an) > 0.035);
         }

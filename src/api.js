@@ -102,6 +102,101 @@ async function iceServers(env = process.env, fetchImpl = globalThis.fetch, now =
 }
 iceServers.reset = () => Object.assign(iceCache, { list: null, until: 0, pending: null });
 
+// ------------------------------------------------------------------ relais audio Cloudflare Realtime (SFU)
+/**
+ * Chaque téléphone ouvre UNE connexion vers Cloudflare (le plus proche), y publie sa voix et reçoit celle des autres.
+ * Marche sur tous les réseaux (4G comprise) et chacun n'envoie sa voix qu'une fois.
+ * Variables : CF_REALTIME_APP_ID + CF_REALTIME_APP_TOKEN (le jeton reste ici, jamais envoyé aux téléphones).
+ * Le client ne manipule que SA session (gardée côté serveur) et ne reçoit que les pistes des joueurs de son salon.
+ */
+const SFU_BASE = 'https://rtc.live.cloudflare.com/v1/apps/';
+const sfuSessionKey = (code, pid) => `onefoo:sfu:${code}:${pid}`;
+const TRACK_RE = /^[a-z0-9]{4,24}$/i;
+const sfuState = { fetch: (...a) => globalThis.fetch(...a) };
+const sfuConfig = (env = process.env) =>
+  env.CF_REALTIME_APP_ID && env.CF_REALTIME_APP_TOKEN ? { app: env.CF_REALTIME_APP_ID, token: env.CF_REALTIME_APP_TOKEN } : null;
+
+async function sfuRequest(cfg, method, path, body) {
+  const r = await sfuState.fetch(SFU_BASE + encodeURIComponent(cfg.app) + path, {
+    method,
+    headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = {};
+  try {
+    data = await r.json();
+  } catch {}
+  const trackErr = Array.isArray(data.tracks) && data.tracks.find((t) => t.errorCode && t.errorCode !== 'close_track_error');
+  if (!r.ok || data.errorCode || trackErr) {
+    const e = trackErr || data;
+    console.error('[sfu]', method, path.replace(/sessions\/[^/]+/, 'sessions/…'), r.status, e.errorCode, e.errorDescription);
+    throw new GameError('Liaison audio momentanément impossible, nouvel essai…');
+  }
+  return data;
+}
+
+const sdpOk = (s) => typeof s === 'string' && s.length > 10 && s.length <= 30000;
+
+async function sfu(st, code, pid, body) {
+  const cfg = sfuConfig();
+  if (!cfg) throw new GameError('Relais audio non configuré.');
+  const room = await st.load(code);
+  if (!room || !room.players.some((p) => p.id === pid && !p.isBot)) throw new GameError('Vous n’êtes pas dans ce salon.');
+  const op = String(body.op || '');
+  if (op === 'session') {
+    const { sessionId } = await sfuRequest(cfg, 'POST', '/sessions/new');
+    await st.redis('SET', sfuSessionKey(code, pid), sessionId, 'EX', 6 * 3600);
+    return { ok: true };
+  }
+  const session = await st.redis('GET', sfuSessionKey(code, pid));
+  if (!session) throw new GameError('Session audio expirée, nouvel essai…');
+  const sp = '/sessions/' + encodeURIComponent(session);
+  if (op === 'push') {
+    if (!sdpOk(body.sdp) || !/^\d{1,4}$/.test(String(body.mid)) || !TRACK_RE.test(String(body.track))) throw new GameError('Requête audio invalide.');
+    const r = await sfuRequest(cfg, 'POST', sp + '/tracks/new', {
+      sessionDescription: { type: 'offer', sdp: body.sdp },
+      tracks: [{ location: 'local', mid: String(body.mid), trackName: String(body.track) }],
+    });
+    return { ok: true, sdp: r.sessionDescription && r.sessionDescription.sdp };
+  }
+  if (op === 'pull') {
+    const from = String(body.from || '');
+    const pub = from !== pid && room.voice && room.voice[from] && room.voiceTracks && room.voiceTracks[from];
+    if (!pub) throw new GameError('Ce joueur n’a pas de micro allumé.');
+    const r = await sfuRequest(cfg, 'POST', sp + '/tracks/new', { tracks: [{ location: 'remote', sessionId: pub.s, trackName: pub.t }] });
+    const t = (r.tracks || [])[0] || {};
+    return {
+      ok: true,
+      track: pub.t,
+      mid: t.mid,
+      renegotiate: !!r.requiresImmediateRenegotiation,
+      sdp: r.sessionDescription && r.sessionDescription.sdp,
+      type: r.sessionDescription && r.sessionDescription.type,
+    };
+  }
+  if (op === 'answer') {
+    if (!sdpOk(body.sdp)) throw new GameError('Requête audio invalide.');
+    await sfuRequest(cfg, 'PUT', sp + '/renegotiate', { sessionDescription: { type: 'answer', sdp: body.sdp } });
+    return { ok: true };
+  }
+  if (op === 'close') {
+    const mids = (Array.isArray(body.mids) ? body.mids : []).map(String).filter((m) => /^\d{1,4}$/.test(m)).slice(0, 16);
+    if (mids.length) await sfuRequest(cfg, 'PUT', sp + '/tracks/close', { tracks: mids.map((mid) => ({ mid })), force: true });
+    return { ok: true };
+  }
+  throw new GameError('Opération audio inconnue.');
+}
+
+/** Micro allumé avec une piste publiée : la session vient du serveur, jamais du client. */
+async function voiceBody(st, code, pid, body) {
+  const out = { ...body, sfu: null };
+  if (body.on && body.track && TRACK_RE.test(String(body.track)) && sfuConfig()) {
+    const session = await st.redis('GET', sfuSessionKey(code, pid));
+    if (session) out.sfu = { s: session, t: String(body.track) };
+  }
+  return out;
+}
+
 async function signal(st, code, pid, body) {
   const room = await st.load(code);
   if (!room) throw new GameError('Aucune partie avec ce code.');
@@ -187,6 +282,8 @@ async function action(st, pid, body, now, user) {
   if (!code) throw new GameError('Code de partie manquant.');
 
   if (a === 'signal') return signal(st, code, pid, body);
+  if (a === 'sfu') return sfu(st, code, pid, body);
+  if (a === 'voice') body = await voiceBody(st, code, pid, body);
 
   if (a === 'join') {
     const { room } = await mutate(st, code, (r) => {
@@ -253,7 +350,11 @@ async function handler(req, res) {
 
     if (req.method === 'GET') {
       const q = req.query || Object.fromEntries(new URL(req.url, 'http://localhost').searchParams);
-      if (q.ice) return send(200, { ok: true, iceServers: await iceServers() });
+      if (q.ice) {
+        const sfuOn = !!sfuConfig();
+        const list = await iceServers();
+        return send(200, { ok: true, sfu: sfuOn, iceServers: sfuOn ? [{ urls: ['stun:stun.cloudflare.com:3478'] }, ...list] : list });
+      }
       const code = normCode(q.code);
       const out = await poll(st, code, pid, Number(q.v) || 0, now);
       if (q.sig === '1' && out.ok && !out.gone) {
@@ -285,3 +386,4 @@ module.exports = handler;
 module.exports.publicId = publicId;
 module.exports.setStore = setStore;
 module.exports.iceServers = iceServers;
+module.exports.sfuState = sfuState; // tests : remplacer sfuState.fetch

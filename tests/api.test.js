@@ -132,6 +132,65 @@ async function autoMove(c) {
   assert.ok((await host.post('voice', { on: false })).ok);
   console.log('✔ API micro : état partagé, relais audio');
 
+  // ---------- 2c. Relais audio Cloudflare Realtime (SFU) — faux Cloudflare
+  {
+    const { sfuState } = require('../src/api');
+    const realFetch = sfuState.fetch;
+    const cf = [];
+    let n = 0;
+    let failNext = false;
+    sfuState.fetch = async (url, opts) => {
+      const body = opts.body ? JSON.parse(opts.body) : null;
+      cf.push({ url, method: opts.method, auth: opts.headers.Authorization, body });
+      const ok = (data) => ({ ok: true, status: 201, json: async () => data });
+      if (url.endsWith('/sessions/new')) return ok({ sessionId: 'SESS' + ++n });
+      if (url.endsWith('/tracks/new') && failNext) return ok({ tracks: [{ errorCode: 'not_found', errorDescription: 'nope' }] });
+      if (url.endsWith('/tracks/new') && body.tracks[0].location === 'local') return ok({ sessionDescription: { type: 'answer', sdp: 'v=0 answer' }, tracks: body.tracks });
+      if (url.endsWith('/tracks/new')) return ok({ requiresImmediateRenegotiation: true, sessionDescription: { type: 'offer', sdp: 'v=0 offer' }, tracks: [{ ...body.tracks[0], mid: '5' }] });
+      return ok({});
+    };
+    process.env.CF_REALTIME_APP_ID = 'APP';
+    process.env.CF_REALTIME_APP_TOKEN = 'SECRET-TOKEN';
+    const sfuIce = await (await fetch(`${BASE}?ice=1`, { headers: { 'X-OneFOO-Key': host.secret } })).json();
+    assert.ok(sfuIce.sfu && sfuIce.iceServers[0].urls[0] === 'stun:stun.cloudflare.com:3478', 'relais annoncé aux téléphones');
+    assert.ok(!JSON.stringify(sfuIce).includes('SECRET'), 'le jeton reste sur le serveur');
+    assert.ok((await host.post('sfu', { op: 'session' })).ok);
+    assert.ok((await friend.post('sfu', { op: 'session' })).ok);
+    assert.match((await friend.post('sfu', { op: 'pull', from: host.state.me })).error, /pas de micro/, 'rien à recevoir avant publication');
+    const pushed = await host.post('sfu', { op: 'push', sdp: 'v=0 local offer', mid: '0', track: 'abc12345' });
+    assert.strictEqual(pushed.sdp, 'v=0 answer');
+    const push = cf.find((c) => c.url.endsWith('/tracks/new'));
+    assert.strictEqual(push.url, 'https://rtc.live.cloudflare.com/v1/apps/APP/sessions/SESS1/tracks/new', 'session de l’hôte, gardée par le serveur');
+    assert.strictEqual(push.auth, 'Bearer SECRET-TOKEN');
+    // un client ne peut pas imposer sa session
+    assert.ok((await host.post('voice', { on: true, track: 'abc12345', sfu: { s: 'FORGED', t: 'evil' } })).ok);
+    await friend.poll();
+    const hp = friend.state.players.find((p) => p.id === host.state.me);
+    assert.ok(hp.mic && hp.vt === 'abc12345', 'piste annoncée dans le salon');
+    assert.ok(!JSON.stringify(friend.state).includes('SESS1'), 'la session n’est pas exposée aux autres');
+    const pulled = await friend.post('sfu', { op: 'pull', from: host.state.me });
+    assert.ok(pulled.ok && pulled.type === 'offer' && pulled.mid === '5' && pulled.track === 'abc12345');
+    const pullReq = cf[cf.length - 1];
+    assert.ok(pullReq.url.includes('/sessions/SESS2/') && pullReq.body.tracks[0].sessionId === 'SESS1' && pullReq.body.tracks[0].trackName === 'abc12345', 'reçoit la piste de l’hôte');
+    assert.ok((await friend.post('sfu', { op: 'answer', sdp: 'v=0 local answer' })).ok);
+    assert.ok(cf[cf.length - 1].url.endsWith('/sessions/SESS2/renegotiate') && cf[cf.length - 1].method === 'PUT');
+    assert.ok((await friend.post('sfu', { op: 'close', mids: ['5', 'x'] })).ok);
+    assert.deepStrictEqual(cf[cf.length - 1].body, { tracks: [{ mid: '5' }], force: true });
+    const stranger = client('Intrus');
+    stranger.state = { code };
+    assert.ok(!(await stranger.post('sfu', { op: 'pull', from: host.state.me })).ok, 'hors du salon : refusé');
+    failNext = true;
+    assert.match((await friend.post('sfu', { op: 'pull', from: host.state.me })).error, /momentanément/, 'erreur du relais signalée');
+    failNext = false;
+    assert.ok((await host.post('voice', { on: false })).ok);
+    await friend.poll();
+    assert.strictEqual(friend.state.players.find((p) => p.id === host.state.me).vt, null, 'micro coupé : plus de piste');
+    delete process.env.CF_REALTIME_APP_ID;
+    delete process.env.CF_REALTIME_APP_TOKEN;
+    sfuState.fetch = realFetch;
+    console.log('✔ API micro : relais Cloudflare (sessions, publication, réception)');
+  }
+
   // ---------- 3. Revanche, réaction, départ
   assert.ok((await host.post('start')).ok, 'revanche');
   assert.ok((await friend.post('emote', { emoji: '🔥' })).ok);

@@ -46,8 +46,9 @@ Contre le système, l'IA calcule de plus en plus de coups à l'avance à chaque 
 - **Entre amis** : créez un salon, partagez le **code à 5 caractères**, le **lien** (`/r/CODE`) ou envoyez-le par **WhatsApp**.
   2 à 6 joueurs, bots optionnels, 30 s par tour, revanche, score du salon, réactions emoji.
   Un joueur qui quitte en cours de manche est remplacé par un bot.
-- **Micro entre amis** (🎙️) : la voix passe directement de téléphone à téléphone (WebRTC), le serveur ne fait que
-  mettre les joueurs en relation. L'avatar de celui qui parle s'allume en vert.
+- **Micro entre amis** (🎙️) : la voix passe par le relais Cloudflare Realtime (ou directement de téléphone à
+  téléphone s'il n'est pas configuré). L'avatar de celui qui parle s'allume en vert. Le bouton 🔊 coupe le jeu et
+  les voix du système, pas celles des amis.
 - **Main lisible** : ⤢ étale les cartes sur plusieurs lignes, 🎨 / 🔢 les trie par couleur ou par chiffre.
 - Installable sur l'écran d'accueil du téléphone (manifeste web).
 
@@ -121,12 +122,24 @@ Pour changer le mot de passe admin : recalculez l'empreinte, remplacez `ADMIN_PA
 
 ### Micro sur réseau mobile (optionnel)
 
-Le micro relie les téléphones directement (serveurs STUN publics). Cela marche dès qu'un des deux est sur un Wi-Fi
-« ouvert », mais **entre deux téléphones en données mobiles** (opérateurs qui partagent une adresse entre clients),
-la liaison directe échoue souvent : il faut un **relais TURN**. Ajoutez l'un de ces réglages dans Vercel, puis redéployez :
+**Recommandé : relais Cloudflare Realtime (SFU).** Chaque téléphone se connecte au serveur Cloudflare le plus proche,
+y publie sa voix et reçoit celle des autres : ça marche sur tous les réseaux (4G comprise) et chacun n'envoie sa voix
+qu'une fois. Créez une application dans dash.cloudflare.com > Realtime > SFU, puis dans Vercel :
 
 ```
-# Cloudflare Realtime TURN (recommandé) — dash.cloudflare.com > Realtime > TURN : créer une clé
+CF_REALTIME_APP_ID=...      # identifiant de l'application
+CF_REALTIME_APP_TOKEN=...   # jeton secret (reste sur le serveur, jamais envoyé aux téléphones)
+```
+
+Le serveur garde la session de chaque joueur et ne laisse recevoir que les voix des joueurs du même salon.
+Tarif Cloudflare : 1 000 Go gratuits par mois, puis 0,05 $ le Go ; une voix consomme environ 20 Mo par heure et par auditeur.
+
+**Sans ces variables**, le micro relie les téléphones directement (STUN). Cela marche dès qu'un des deux est sur un
+Wi-Fi « ouvert », mais **entre deux téléphones en données mobiles** la liaison directe échoue souvent ; un relais TURN
+peut alors aider :
+
+```
+# Cloudflare Realtime TURN — dash.cloudflare.com > Realtime > TURN : créer une clé
 CF_TURN_KEY_ID=...        # identifiant de la clé TURN
 CF_TURN_API_TOKEN=...     # jeton d'API de la clé (reste sur le serveur)
 
@@ -155,8 +168,8 @@ de parties par mois.
 - Pas de vérification par SMS : rien n'empêche quelqu'un d'utiliser le numéro d'un autre s'il est encore libre.
 - Entre amis, les actions des autres joueurs apparaissent avec ~1 s de décalage (rafraîchissement régulier, pas de temps réel pur).
 - La voix du système dépend des voix françaises installées sur le téléphone (plus naturelle sur les téléphones récents).
-- Le micro nécessite https (fonctionne sur le site en ligne, pas via `http://192.168.x.x` en local) ; jusqu'à 6 joueurs
-  connectés deux à deux.
+- Le micro nécessite https (fonctionne sur le site en ligne, pas via `http://192.168.x.x` en local).
+- Tous les joueurs d'un salon doivent avoir la même version de la page (rechargée après une mise à jour) pour s'entendre.
 - Un salon inactif est supprimé de la base au bout de 2 h.
 
 ## Ajouter un jeu
