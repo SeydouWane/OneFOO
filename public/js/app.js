@@ -373,13 +373,32 @@
     } catch {}
     return actx;
   }
-  const waitIce = (pc) =>
-    new Promise((resolve) => {
-      if (pc.iceGatheringState === 'complete') return resolve();
-      const done = () => pc.iceGatheringState === 'complete' && resolve();
-      pc.addEventListener('icegatheringstatechange', done);
-      setTimeout(resolve, 2500);
+  const DEFAULT_ICE = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+  const hasTurn = (servers) => servers.some((s) => [].concat(s.urls).some((u) => /^turns?:/.test(u)));
+  /**
+   * Attend juste assez de "candidats" réseau pour envoyer une offre utile :
+   * la première adresse publique (STUN) — ou relais (TURN) si configuré — sans attendre la fin complète.
+   */
+  function trackGathering(pc, servers) {
+    const needRelay = hasTurn(servers);
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (delay = 0) =>
+        setTimeout(() => {
+          if (!done) {
+            done = true;
+            resolve();
+          }
+        }, delay);
+      pc.addEventListener('icegatheringstatechange', () => pc.iceGatheringState === 'complete' && finish());
+      pc.addEventListener('icecandidate', (e) => {
+        if (!e.candidate) return finish();
+        const c = e.candidate.candidate || '';
+        if (/ typ relay/.test(c) || (!needRelay && / typ srflx/.test(c))) finish(250);
+      });
+      finish(needRelay ? 4000 : 2500); // filet de sécurité
     });
+  }
 
   const voice = {
     micOn: false,
@@ -390,7 +409,9 @@
     active: false,
     peers: new Map(),
     retryAt: new Map(),
+    calling: new Set(),
     iceServers: null,
+    icePromise: null,
     meterTimer: null,
     wants() {
       return this.micOn || this.active;
@@ -408,15 +429,18 @@
     track() {
       return this.stream ? this.stream.getAudioTracks()[0] || null : null;
     },
-    async loadIce() {
-      if (this.iceServers) return this.iceServers;
-      try {
-        const r = await request('GET', null, '?ice=1');
-        this.iceServers = (r && r.iceServers) || [];
-      } catch {
-        this.iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+    /** Chargé une seule fois (dès l'entrée dans un salon) ; liste par défaut si le serveur tarde. */
+    loadIce() {
+      if (this.iceServers) return Promise.resolve(this.iceServers);
+      if (!this.icePromise) {
+        this.icePromise = request('GET', null, '?ice=1')
+          .then((r) => (this.iceServers = (r && r.iceServers && r.iceServers.length && r.iceServers) || DEFAULT_ICE))
+          .catch(() => {
+            this.icePromise = null;
+            return DEFAULT_ICE;
+          });
       }
-      return this.iceServers;
+      return Promise.race([this.icePromise, new Promise((r) => setTimeout(() => r(DEFAULT_ICE), 1500))]);
     },
     send(to, data) {
       if (!net.code) return;
@@ -473,6 +497,7 @@
     /** Appelé à chaque état reçu : ouvre / ferme les connexions audio. */
     sync(room) {
       if (!room || room.mode !== 'friends') return this.shutdown();
+      if (!this.iceServers) this.loadIce(); // préchargement, hors du chemin critique
       const mine = room.players.find((p) => p.id === playerId);
       if (mine && mine.mic && !this.micOn && !this.fixing && !this.busy) {
         // le serveur croit notre micro allumé (ex. page rechargée) : on corrige
@@ -490,9 +515,9 @@
       }
       this.startMeter();
     },
-    newPeer(id, session) {
-      const pc = new RTCPeerConnection({ iceServers: this.iceServers || [] });
-      const peer = { pc, session, audio: null, an: null, timer: null };
+    newPeer(id, session, servers) {
+      const pc = new RTCPeerConnection({ iceServers: servers });
+      const peer = { pc, session, audio: null, an: null, timer: null, gathered: trackGathering(pc, servers) };
       pc.ontrack = (e) => this.attach(peer, e.streams[0] || new MediaStream([e.track]));
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === 'connected') clearTimeout(peer.timer);
@@ -503,15 +528,18 @@
       return peer;
     },
     async call(id) {
-      await this.loadIce();
+      if (this.peers.has(id) || this.calling.has(id)) return;
+      this.calling.add(id);
+      const servers = await this.loadIce();
+      this.calling.delete(id);
       if (this.peers.has(id) || !this.active) return;
       const session = Math.random().toString(36).slice(2, 10);
-      const peer = this.newPeer(id, session);
+      const peer = this.newPeer(id, session, servers);
       try {
         const tr = peer.pc.addTransceiver('audio', { direction: 'sendrecv' });
         if (this.track()) await tr.sender.replaceTrack(this.track());
         await peer.pc.setLocalDescription(await peer.pc.createOffer());
-        await waitIce(peer.pc);
+        await peer.gathered;
         if (this.peers.get(id) !== peer) return;
         this.send(id, { type: 'offer', sdp: peer.pc.localDescription.sdp, session });
       } catch (err) {
@@ -522,9 +550,9 @@
     async onSignal(s) {
       try {
         if (s.type === 'offer') {
-          await this.loadIce();
+          const servers = await this.loadIce();
           this.close(s.from);
-          const peer = this.newPeer(s.from, s.session);
+          const peer = this.newPeer(s.from, s.session, servers);
           await peer.pc.setRemoteDescription({ type: 'offer', sdp: s.sdp });
           const tr = peer.pc.getTransceivers()[0];
           if (tr) {
@@ -532,7 +560,7 @@
             if (this.track()) await tr.sender.replaceTrack(this.track());
           }
           await peer.pc.setLocalDescription(await peer.pc.createAnswer());
-          await waitIce(peer.pc);
+          await peer.gathered;
           if (this.peers.get(s.from) !== peer) return;
           this.send(s.from, { type: 'answer', sdp: peer.pc.localDescription.sdp, session: s.session });
         } else if (s.type === 'answer') {
@@ -608,6 +636,8 @@
       }, 160);
     },
   };
+
+  if (/[?&]debug\b/.test(location.search)) window.__onefoo = { voice, state };
 
   function renderMic() {
     const on = voice.micOn;
