@@ -1,12 +1,12 @@
 {
   "name": "onefoo",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "OneFOO - jeux en ligne entre amis ou contre le système. Premier jeu : FOO! (jeu de cartes de couleurs).",
-  "main": "server.js",
+  "main": "local-server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js",
-    "test": "node tests/engine.test.js && node tests/online.test.js"
+    "start": "node local-server.js",
+    "dev": "node --watch local-server.js",
+    "test": "node tests/engine.test.js && node tests/rooms.test.js && node tests/api.test.js"
   },
   "engines": {
     "node": ">=18"
@@ -14,10 +14,6 @@
   "license": "UNLICENSED",
   "private": true,
   "dependencies": {
-    "express": "^4.22.3",
-    "socket.io": "^4.8.1"
-  },
-  "devDependencies": {
-    "socket.io-client": "^4.8.1"
+    "express": "^4.22.3"
   }
 }

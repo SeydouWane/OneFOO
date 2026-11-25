@@ -245,9 +245,11 @@
 
   <div class="foo-burst" id="fooBurst"><span>FOO!</span><small id="fooBurstName"></small></div>
   <div class="toasts" id="toasts" aria-live="polite"></div>
-  <div class="conn hidden" id="connBanner">Connexion au serveur…</div>
+  <div class="conn hidden" id="connBanner">Connexion perdue… nouvelle tentative</div>
 
-  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/foo/engine.js"></script>
+  <script src="/js/foo/bot.js"></script>
+  <script src="/js/foo/rooms.js"></script>
   <script src="/js/app.js"></script>
 </body>
 </html>

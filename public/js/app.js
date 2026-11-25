@@ -1,6 +1,9 @@
 /* OneFOO — client */
 (() => {
   'use strict';
+  const Engine = window.FooEngine;
+  const Bot = window.FooBot;
+  const Rooms = window.FooRooms;
 
   // ================================================================ utilitaires
   const $ = (s, el = document) => el.querySelector(s);
@@ -17,6 +20,11 @@
     set(k, v) {
       try {
         localStorage.setItem(k, JSON.stringify(v));
+      } catch {}
+    },
+    del(k) {
+      try {
+        localStorage.removeItem(k);
       } catch {}
     },
   };
@@ -37,8 +45,8 @@
   }
 
   // ================================================================ constantes
-  const AVATARS = ['😎', '🦁', '🐯', '🦊', '🐼', '🐸', '🦉', '🐙', '👽', '🤠', '🦄', '🐵', '🐧', '🐨', '🦖', '👑'];
-  const EMOTES = ['👍', '😂', '😮', '😡', '🔥', '😈', '🙏', '👋', '😭', '🎉'];
+  const AVATARS = Rooms.AVATARS;
+  const EMOTES = Rooms.EMOTES;
   const COLOR_NAME = { red: 'Rouge', yellow: 'Jaune', green: 'Vert', blue: 'Bleu' };
   const COLOR_SYM = { red: '▲', yellow: '●', green: '◆', blue: '■' };
   const COLOR_CSS = { red: 'var(--red)', yellow: 'var(--yellow)', green: 'var(--green)', blue: 'var(--blue)' };
@@ -48,21 +56,24 @@
   const VALUE_RANK = { skip: 10, reverse: 11, draw2: 12, wild: 13, wild4: 14 };
   const valueRank = (v) => (/^\d$/.test(v) ? Number(v) : VALUE_RANK[v] ?? 15);
   const TIERS = [[1, 'Débutant'], [2, 'Apprenti'], [4, 'Joueur'], [6, 'Confirmé'], [9, 'Expert'], [12, 'Maître'], [15, 'Légende']];
-  const levelTitle = (lv) => TIERS.reduce((t, [min, name]) => (lv >= min ? name : t), TIERS[0][1]);
-  const opponentsFor = (lv) => (lv <= 2 ? 1 : lv <= 5 ? 2 : 3);
-  const TURN_MS = 30000;
+  const levelTitle = Bot.levelTitle;
+  const opponentsFor = (lv) => Bot.profile(lv).opponents;
+  const POLL_MS = 1200;
+  const LOCAL_ID = 'local';
 
   // ================================================================ identité & progression
-  function newId() {
-    const a = new Uint8Array(12);
+  function newSecret() {
+    const a = new Uint8Array(16);
     crypto.getRandomValues(a);
     return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('');
   }
-  let playerId = store.get('onefoo.id', null);
-  if (typeof playerId !== 'string' || !/^[a-zA-Z0-9_-]{8,64}$/.test(playerId)) {
-    playerId = newId();
-    store.set('onefoo.id', playerId);
+  // Clé secrète de l'appareil (jamais montrée aux autres) ; le serveur en dérive l'identifiant public.
+  let secret = store.get('onefoo.id', null);
+  if (typeof secret !== 'string' || !/^[a-f0-9]{24,64}$/i.test(secret)) {
+    secret = newSecret();
+    store.set('onefoo.id', secret);
   }
+  let playerId = null; // identifiant public dans le salon courant
   const me = { name: String(store.get('onefoo.name', '') || ''), avatar: store.get('onefoo.avatar', null) };
   if (!AVATARS.includes(me.avatar)) {
     me.avatar = AVATARS[Math.floor(Math.random() * AVATARS.length)];
@@ -80,6 +91,7 @@
     lastGameId: null,
     lastEventSeq: 0,
     noticeSeq: 0,
+    emoteSeq: 0,
     lastTurnSeq: null,
     prevHandIds: new Set(),
     lastTopId: null,
@@ -88,6 +100,7 @@
     clockOffset: 0,
     busy: false,
     actionText: '',
+    fooHintFor: null,
   };
   const oppEls = new Map();
 
@@ -125,6 +138,7 @@
   const sfx = (n) => SFX[n] && tone(...SFX[n]);
   const vibrate = (p) => {
     try {
+      if (navigator.userActivation && !navigator.userActivation.hasBeenActive) return;
       if (navigator.vibrate) navigator.vibrate(p);
     } catch {}
   };
@@ -145,15 +159,9 @@
     void el.offsetWidth;
     el.classList.add('shake');
   }
-  function openModal(id) {
-    $('#' + id).classList.add('open');
-  }
-  function closeModal(id) {
-    $('#' + id).classList.remove('open');
-  }
-  function closeAllModals() {
-    $$('.modal.open').forEach((m) => m.classList.remove('open'));
-  }
+  const openModal = (id) => $('#' + id).classList.add('open');
+  const closeModal = (id) => $('#' + id).classList.remove('open');
+  const closeAllModals = () => $$('.modal.open').forEach((m) => m.classList.remove('open'));
   function show(name, fromHistory = false) {
     if (state.screen === name) return;
     const wasGameLike = state.screen === 'game' || state.screen === 'lobby';
@@ -164,63 +172,208 @@
     if (!fromHistory && name !== 'home' && !(wasGameLike && (name === 'game' || name === 'lobby'))) history.pushState({ s: name }, '');
     window.scrollTo(0, 0);
   }
-
-  // ================================================================ réseau
-  const socket = io({ reconnectionDelayMax: 4000 });
   const connBanner = $('#connBanner');
-  const connTimer = setTimeout(() => !socket.connected && connBanner.classList.remove('hidden'), 1500);
-  socket.on('connect', () => {
-    clearTimeout(connTimer);
-    connBanner.classList.add('hidden');
-    hello();
-  });
-  socket.on('disconnect', () => connBanner.classList.remove('hidden'));
+  let netFails = 0;
+  function setOnline(ok) {
+    netFails = ok ? 0 : netFails + 1;
+    connBanner.classList.toggle('hidden', netFails < 2);
+  }
 
-  function emit(event, data = {}) {
-    return new Promise((resolve) => {
-      if (!socket.connected) {
-        toast('Pas de connexion au serveur…', 'bad');
-        return resolve({ ok: false });
-      }
-      socket.timeout(8000).emit(event, data, (err, res) => {
-        if (err || !res) {
-          toast('Le serveur ne répond pas.', 'bad');
-          return resolve({ ok: false });
-        }
-        if (!res.ok && res.error) toast(res.error, 'bad');
-        resolve(res);
+  // ================================================================ réseau (mode entre amis)
+  const net = { code: null, version: 0, timer: null, inflight: false };
+
+  async function request(method, body, query = '') {
+    const res = await fetch('/api/room' + query, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'X-OneFOO-Key': secret },
+      body: body ? JSON.stringify(body) : undefined,
+      cache: 'no-store',
+    });
+    try {
+      return await res.json();
+    } catch {
+      return { ok: false, error: `Le serveur ne répond pas correctement (${res.status}).` };
+    }
+  }
+
+  async function api(action, data = {}) {
+    try {
+      const res = await request('POST', {
+        action,
+        code: data.code || (state.room && state.room.mode === 'friends' ? state.room.code : undefined),
+        name: me.name,
+        avatar: me.avatar,
+        ...data,
       });
-    });
+      setOnline(true);
+      if (!res.ok && res.error) toast(res.error, 'bad');
+      if (res.state) applyState(res.state);
+      return res;
+    } catch {
+      setOnline(false);
+      toast('Pas de connexion au serveur…', 'bad');
+      return { ok: false };
+    }
   }
 
-  function hello() {
-    socket.emit('hello', { playerId, name: me.name, avatar: me.avatar }, (res) => {
-      if (!res || !res.ok) return;
-      if (!res.room && state.room) {
-        // le salon n'existe plus (serveur redémarré, salon expiré...)
-        state.room = null;
-        if (state.screen === 'game' || state.screen === 'lobby') {
-          closeAllModals();
-          show('hub');
-          toast("Cette partie n'existe plus.");
+  function schedulePoll(delay = POLL_MS) {
+    clearTimeout(net.timer);
+    net.timer = net.code ? setTimeout(pollNow, delay) : null;
+  }
+  async function pollNow() {
+    const code = net.code;
+    if (!code || net.inflight) return schedulePoll();
+    net.inflight = true;
+    try {
+      const res = await request('GET', null, `?code=${encodeURIComponent(code)}&v=${net.version}`);
+      setOnline(true);
+      if (code === net.code) {
+        if (res.gone) return roomGone();
+        if (res.state) applyState(res.state);
+        else if (res.same) state.clockOffset = res.serverNow - Date.now();
+        else if (!res.ok && res.error) {
+          toast(res.error, 'bad');
+          return roomGone(true);
         }
       }
-      if (!res.room) tryPendingJoin();
-    });
+    } catch {
+      setOnline(false);
+    } finally {
+      net.inflight = false;
+    }
+    if (code === net.code) schedulePoll(document.hidden ? 5000 : POLL_MS);
+  }
+  document.addEventListener('visibilitychange', () => !document.hidden && net.code && schedulePoll(0));
+
+  function stopPolling() {
+    net.code = null;
+    net.version = 0;
+    clearTimeout(net.timer);
+    net.timer = null;
+    store.del('onefoo.room');
+  }
+  function roomGone(silent = false) {
+    stopPolling();
+    state.room = null;
+    if (state.screen === 'game' || state.screen === 'lobby') {
+      closeAllModals();
+      show('hub');
+      if (!silent) toast("Cette partie n'existe plus.");
+    }
   }
 
-  socket.on('room:state', (room) => {
-    if (state.leftCodes.has(room.code)) return;
+  // ================================================================ mode solo (dans le navigateur)
+  const solo = {
+    room: null,
+    ticker: null,
+    start(level) {
+      this.stop();
+      const now = Date.now();
+      const code = 'SOLO-' + now.toString(36);
+      const room = Rooms.newRoom(code, 'solo', { id: LOCAL_ID, name: me.name, avatar: me.avatar }, now, { level });
+      for (let i = 0; i < Bot.profile(level).opponents; i++) Rooms.addBot(room);
+      Rooms.startGame(room, now);
+      Rooms.advance(room, now);
+      this.room = room;
+      this.commit();
+      this.run();
+    },
+    run() {
+      clearInterval(this.ticker);
+      this.ticker = setInterval(() => {
+        if (!this.room) return;
+        let changed = false;
+        try {
+          changed = Rooms.advance(this.room, Date.now());
+        } catch (err) {
+          console.error(err);
+        }
+        if (changed) this.commit();
+        if (Rooms.status(this.room) !== 'playing') {
+          clearInterval(this.ticker);
+          this.ticker = null;
+        }
+      }, 120);
+    },
+    act(action, data = {}) {
+      if (!this.room) return { ok: false };
+      try {
+        const now = Date.now();
+        const out = Rooms.act(this.room, LOCAL_ID, action, data, now);
+        Rooms.advance(this.room, now);
+        this.commit();
+        return { ok: true, ...(out || {}) };
+      } catch (err) {
+        toast(err.message || 'Action impossible', 'bad');
+        return { ok: false, error: err.message };
+      }
+    },
+    commit() {
+      this.room.version++;
+      if (Rooms.status(this.room) === 'playing') store.set('onefoo.solo', this.room);
+      else store.del('onefoo.solo');
+      applyState(Rooms.view(this.room, LOCAL_ID, Date.now()));
+    },
+    stop() {
+      clearInterval(this.ticker);
+      this.ticker = null;
+      this.room = null;
+      store.del('onefoo.solo');
+    },
+    restore() {
+      const saved = store.get('onefoo.solo', null);
+      if (!saved) return false;
+      try {
+        const room = Rooms.parse(saved);
+        if (!room.game || room.game.status !== 'playing') throw new Error('terminée');
+        this.room = room;
+        this.commit();
+        this.run();
+        return true;
+      } catch {
+        store.del('onefoo.solo');
+        return false;
+      }
+    },
+  };
+
+  /** Action de jeu : en local (solo) ou via l'API (amis). */
+  function send(action, data = {}) {
+    if (state.room && state.room.mode === 'solo') return Promise.resolve(solo.act(action, data));
+    return api(action, data);
+  }
+
+  // ================================================================ état reçu
+  function applyState(room) {
+    if (room.mode === 'friends') {
+      if (state.leftCodes.has(room.code)) return;
+      const cur = state.room;
+      if (cur && cur.mode === 'friends' && cur.code === room.code && room.version < cur.version) return; // réponse périmée
+      if (net.code !== room.code) {
+        solo.stop();
+        net.code = room.code;
+        schedulePoll();
+      }
+      net.version = room.version;
+      store.set('onefoo.room', room.code);
+    } else if (net.code) {
+      stopPolling();
+    }
+
+    playerId = room.me;
     state.clockOffset = room.serverNow - Date.now();
     const prev = state.room;
     state.room = room;
-    if (!prev || prev.code !== room.code) {
+    const fresh = !prev || prev.code !== room.code || prev.mode !== room.mode;
+    if (fresh) {
       state.noticeSeq = room.notices.reduce((m, n) => Math.max(m, n.seq), 0);
+      state.emoteSeq = room.emotes.reduce((m, e) => Math.max(m, e.seq), 0);
       state.lastGameId = null;
     } else {
       for (const n of room.notices) if (n.seq > state.noticeSeq) toast(n.text);
       state.noticeSeq = room.notices.reduce((m, n) => Math.max(m, n.seq), state.noticeSeq);
     }
+
     if (room.status === 'lobby') {
       closeModal('resultModal');
       closeModal('colorModal');
@@ -230,27 +383,35 @@
       show('game');
       renderGame(room);
     }
-  });
+    if (!fresh) showEmotes(room);
+  }
 
-  socket.on('emote', ({ playerId: pid, emoji }) => {
-    const host = pid === playerId ? $('#meBubble') : oppEls.get(pid);
-    if (!host || !EMOTES.includes(emoji)) return;
-    const b = h('div', { class: 'bubble', text: emoji });
-    host.append(b);
-    setTimeout(() => b.remove(), 2300);
-  });
+  function showEmotes(room) {
+    for (const e of room.emotes) {
+      if (e.seq <= state.emoteSeq) continue;
+      state.emoteSeq = e.seq;
+      const host = e.playerId === playerId ? $('#meBubble') : oppEls.get(e.playerId);
+      if (!host || !EMOTES.includes(e.emoji)) continue;
+      const b = h('div', { class: 'bubble', text: e.emoji });
+      host.append(b);
+      setTimeout(() => b.remove(), 2300);
+    }
+  }
 
   // ================================================================ profil / accueil
   const nameInput = $('#nameInput');
   nameInput.value = me.name;
   $('#avatarBtn').textContent = me.avatar;
 
+  function syncProfile() {
+    if (state.room && state.room.mode === 'friends' && state.room.status !== 'playing') api('profile');
+  }
   function setName(v) {
-    v = String(v || '').replace(/[<>\u0000-\u001f]/g, '').trim().slice(0, 16);
+    v = Rooms.sanitizeName(v);
     if (v === me.name) return;
     me.name = v;
     store.set('onefoo.name', v);
-    if (socket.connected && v) socket.emit('profile', { name: v, avatar: me.avatar });
+    syncProfile();
   }
   function requireName() {
     const v = nameInput.value.trim();
@@ -264,7 +425,7 @@
     toast("Choisissez d'abord un pseudo 🙂");
     return false;
   }
-  nameInput.addEventListener('change', () => setName(nameInput.value));
+  nameInput.addEventListener('change', () => nameInput.value.trim() && setName(nameInput.value));
   nameInput.addEventListener('keydown', (e) => e.key === 'Enter' && nameInput.blur());
 
   $('#avatarGrid').replaceChildren(
@@ -276,7 +437,7 @@
           me.avatar = a;
           store.set('onefoo.avatar', a);
           $('#avatarBtn').textContent = a;
-          if (socket.connected) socket.emit('profile', { name: me.name, avatar: a });
+          syncProfile();
           closeModal('avatarModal');
         },
       })
@@ -342,12 +503,19 @@
       state.busy = false;
     }
   }
-  const startSolo = () =>
-    guarded(async () => {
-      if (!requireName()) return;
-      if (state.room) state.leftCodes.add(state.room.code);
-      await emit('solo:start', { level: stats.level });
-    });
+  function leaveFriendsRoom() {
+    if (state.room && state.room.mode === 'friends') {
+      const code = state.room.code;
+      state.leftCodes.add(code);
+      request('POST', { action: 'leave', code }).catch(() => {});
+    }
+    stopPolling();
+  }
+  function startSolo() {
+    if (!requireName()) return;
+    leaveFriendsRoom();
+    solo.start(stats.level);
+  }
   async function joinRoom(code) {
     code = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (code.length < 4) {
@@ -358,8 +526,10 @@
       state.pendingJoin = code;
       return;
     }
+    if (!(state.room && state.room.code === code)) leaveFriendsRoom();
+    solo.stop();
     state.leftCodes.delete(code);
-    const res = await guarded(() => emit('room:join', { code }));
+    const res = await guarded(() => api('join', { code }));
     if (res && !res.ok && state.screen !== 'hub') show('hub');
   }
 
@@ -367,7 +537,9 @@
   $('#createBtn').addEventListener('click', () =>
     guarded(async () => {
       if (!requireName()) return;
-      await emit('room:create');
+      leaveFriendsRoom();
+      solo.stop();
+      await api('create');
     })
   );
   const codeInput = $('#codeInput');
@@ -383,7 +555,7 @@
   });
 
   // ================================================================ salon
-  // Ouvert via "localhost" : le lien partagé doit plutôt contenir l'adresse Wi-Fi de l'ordinateur.
+  // Ouvert via "localhost" (serveur local) : le lien partagé doit plutôt contenir l'adresse Wi-Fi.
   let shareOrigin = location.origin;
   if (['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) {
     fetch('/api/lan')
@@ -440,7 +612,7 @@
           ),
           p.wins ? h('span', { class: 'pl-wins', text: `🏆 ${p.wins}` }) : null,
           isHost && p.isBot
-            ? h('button', { class: 'pl-remove', 'aria-label': 'Retirer ' + p.name, text: '✕', onclick: () => emit('room:removeBot', { id: p.id }) })
+            ? h('button', { class: 'pl-remove', 'aria-label': 'Retirer ' + p.name, text: '✕', onclick: () => send('removeBot', { id: p.id }) })
             : null
         )
       )
@@ -476,14 +648,12 @@
     if (!code) return;
     window.open('https://wa.me/?text=' + encodeURIComponent(`${inviteText(code)}\n${inviteLink(code)}`), '_blank', 'noopener');
   });
-  $('#addBotBtn').addEventListener('click', () => emit('room:addBot'));
-  $('#startBtn').addEventListener('click', () => guarded(() => emit('room:start')));
+  $('#addBotBtn').addEventListener('click', () => send('addBot'));
+  $('#startBtn').addEventListener('click', () => guarded(() => send('start')));
 
   function leaveToHub() {
-    if (state.room) {
-      state.leftCodes.add(state.room.code);
-      socket.emit('room:leave', {}, () => {});
-    }
+    if (state.room && state.room.mode === 'solo') solo.stop();
+    else leaveFriendsRoom();
     state.room = null;
     closeAllModals();
     show('hub');
@@ -644,9 +814,10 @@
       );
       state.lastTopId = top.id;
     }
-    const pill = $('#colorPill');
-    pill.replaceChildren('Couleur : ', h('b', { style: `color:${COLOR_CSS[g.currentColor]}`, text: `${COLOR_SYM[g.currentColor]} ${COLOR_NAME[g.currentColor]}` }));
-
+    $('#colorPill').replaceChildren(
+      'Couleur : ',
+      h('b', { style: `color:${COLOR_CSS[g.currentColor]}`, text: `${COLOR_SYM[g.currentColor]} ${COLOR_NAME[g.currentColor]}` })
+    );
     $('#drawCount').textContent = g.drawCount;
     const pile = $('#drawPile');
     const canDraw = myTurn && !g.hasDrawn;
@@ -677,8 +848,7 @@
   }
 
   function layoutHand() {
-    const hand = $('#hand');
-    const cards = hand.children;
+    const cards = $('#hand').children;
     const n = cards.length;
     if (!n) return;
     const cw = cards[0].offsetWidth;
@@ -817,7 +987,7 @@
   }
 
   // ----- actions du joueur
-  async function onCardTap(card, el) {
+  function onCardTap(card, el) {
     const g = state.room && state.room.game;
     if (!g || g.status !== 'playing') return;
     if (g.turnPlayerId !== playerId) {
@@ -838,8 +1008,8 @@
   }
   function playCard(cardId, color) {
     return guarded(async () => {
-      const res = await emit('game:play', { cardId, color });
-      if (res.ok) sfx('play');
+      const res = await send('play', { cardId, color });
+      if (res && res.ok) sfx('play');
     });
   }
   $$('.color-choice').forEach((b) =>
@@ -849,17 +1019,17 @@
       state.pendingWild = null;
     })
   );
-  $('#drawPile').addEventListener('click', () => guarded(() => emit('game:draw')));
-  $('#passBtn').addEventListener('click', () => guarded(() => emit('game:pass')));
-  $('#fooBtn').addEventListener('click', () => emit('game:foo'));
-  $('#catchBtn').addEventListener('click', (e) => emit('game:catch', { targetId: e.currentTarget.dataset.target }));
+  $('#drawPile').addEventListener('click', () => guarded(() => send('draw')));
+  $('#passBtn').addEventListener('click', () => guarded(() => send('pass')));
+  $('#fooBtn').addEventListener('click', () => send('foo'));
+  $('#catchBtn').addEventListener('click', (e) => send('catch', { targetId: e.currentTarget.dataset.target }));
 
   $('#emoteGrid').replaceChildren(
     ...EMOTES.map((em) =>
       h('button', {
         text: em,
         onclick: () => {
-          socket.emit('room:emote', { emoji: em });
+          send('emote', { emoji: em });
           closeModal('emoteModal');
         },
       })
@@ -886,7 +1056,7 @@
     const left = r.turnDeadline - (Date.now() + state.clockOffset);
     t.classList.add('on');
     t.classList.toggle('low', left < 8000);
-    $('#timerBar').style.transform = `scaleX(${Math.max(0, Math.min(1, left / TURN_MS))})`;
+    $('#timerBar').style.transform = `scaleX(${Math.max(0, Math.min(1, left / (r.turnMs || 30000)))})`;
   }, 250);
 
   // ================================================================ fin de manche
@@ -906,8 +1076,7 @@
         } else stats.losses++;
         saveStats();
       }
-      const lvUp = $('#levelUp');
-      lvUp.classList.toggle('hidden', before === null);
+      $('#levelUp').classList.toggle('hidden', before === null);
       if (room.mode === 'solo') {
         if (iWon) {
           $('#resultIcon').textContent = '🏆';
@@ -965,9 +1134,9 @@
       const isHost = room.hostId === playerId;
       box.replaceChildren(
         isHost
-          ? h('button', { class: 'btn primary big', onclick: () => guarded(() => emit('room:start')), text: 'Rejouer' })
+          ? h('button', { class: 'btn primary big', onclick: () => guarded(() => send('start')), text: 'Rejouer' })
           : h('p', { class: 'waiting', text: 'En attente de l’hôte pour la revanche…' }),
-        isHost ? h('button', { class: 'btn secondary', onclick: () => emit('room:lobby'), text: 'Retour au salon (inviter, bots)' }) : null,
+        isHost ? h('button', { class: 'btn secondary', onclick: () => send('lobby'), text: 'Retour au salon (inviter, bots)' }) : null,
         h('button', { class: 'btn secondary', onclick: leaveToHub, text: 'Quitter' })
       );
     }
@@ -991,5 +1160,15 @@
     }
   });
 
+  // ================================================================ démarrage
   renderHub();
+  if (state.pendingJoin) tryPendingJoin();
+  else if (!solo.restore()) {
+    const code = store.get('onefoo.room', null);
+    if (code) {
+      net.code = String(code);
+      net.version = 0;
+      pollNow();
+    }
+  }
 })();

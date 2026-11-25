@@ -1,7 +1,7 @@
 'use strict';
 const assert = require('assert');
-const { FooGame, DECK_SIZE, GameError } = require('../src/games/foo/engine');
-const bot = require('../src/games/foo/bot');
+const { FooGame, DECK_SIZE, GameError } = require('../public/js/foo/engine.js');
+const bot = require('../public/js/foo/bot.js');
 
 function players(n) {
   return Array.from({ length: n }, (_, i) => ({ id: 'p' + i, name: 'P' + i, isBot: true }));
@@ -105,6 +105,18 @@ function players(n) {
   assert.throws(() => g.draw('p0'), GameError, 'une seule pioche');
   g.pass('p0');
   assert.strictEqual(g.turn, 1);
+}
+
+// 5b) Sauvegarde / restauration JSON (Redis, localStorage) en pleine partie
+{
+  const g = new FooGame(players(3));
+  for (let i = 0; i < 10 && g.status === 'playing'; i++) bot.playTurn(g, g.current().id, bot.profile(5));
+  const copy = FooGame.fromJSON(JSON.parse(JSON.stringify(g)));
+  assert.ok(!('rng' in JSON.parse(JSON.stringify(g))), 'rng non sérialisé');
+  assert.deepStrictEqual(copy.viewFor('p0'), g.viewFor('p0'));
+  assert.strictEqual(copy.totalCards(), DECK_SIZE);
+  while (copy.status === 'playing') bot.playTurn(copy, copy.current().id, bot.profile(5));
+  assert.ok(copy.winnerId, 'la partie restaurée se termine');
 }
 
 // 6) Simulation massive : invariants + fin de partie
