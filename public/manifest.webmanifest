@@ -1,0 +1,14 @@
+{
+  "name": "OneFOO",
+  "short_name": "OneFOO",
+  "description": "Jouez en ligne avec vos amis ou défiez le système.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#100f24",
+  "theme_color": "#100f24",
+  "lang": "fr",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
