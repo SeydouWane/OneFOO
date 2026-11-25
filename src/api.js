@@ -42,20 +42,65 @@ const normCode = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '').
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Serveurs pour établir l'audio entre téléphones. STUN suffit le plus souvent ; un serveur TURN
- * (variables TURN_URLS, TURN_USERNAME, TURN_CREDENTIAL) aide quand un réseau mobile bloque la connexion directe.
+ * Serveurs pour établir l'audio entre téléphones. STUN suffit quand un des deux téléphones est sur un Wi-Fi
+ * « ouvert » ; entre deux téléphones en données mobiles (NAT des opérateurs), il faut un relais TURN.
+ * Relais possibles (variables d'environnement, le premier configuré est utilisé) :
+ *  - Cloudflare Realtime TURN : CF_TURN_KEY_ID + CF_TURN_API_TOKEN (identifiants temporaires générés ici)
+ *  - Metered / Open Relay     : METERED_TURN_URL (adresse « …/api/v1/turn/credentials?apiKey=… »)
+ *  - serveur fixe             : TURN_URLS + TURN_USERNAME + TURN_CREDENTIAL
  */
-function iceServers(env = process.env) {
-  const list = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
-  if (env.TURN_URLS && env.TURN_USERNAME && env.TURN_CREDENTIAL) {
-    list.push({
-      urls: env.TURN_URLS.split(',').map((s) => s.trim()).filter(Boolean),
-      username: env.TURN_USERNAME,
-      credential: env.TURN_CREDENTIAL,
-    });
-  }
-  return list;
+const STUN = { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] };
+const iceCache = { list: null, until: 0, pending: null };
+
+/** Retire les adresses inutilisables par un navigateur (port 53 : bloqué, fait attendre pour rien). */
+function cleanIce(servers) {
+  return (Array.isArray(servers) ? servers : [servers])
+    .filter((s) => s && s.urls)
+    .map((s) => ({ ...s, urls: [].concat(s.urls).filter((u) => !/:53(\?|$)/.test(u)) }))
+    .filter((s) => s.urls.length);
 }
+
+async function fetchTurn(env, fetchImpl) {
+  if (env.CF_TURN_KEY_ID && env.CF_TURN_API_TOKEN) {
+    const r = await fetchImpl(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(env.CF_TURN_KEY_ID)}/credentials/generate-ice-servers`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.CF_TURN_API_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ttl: 86400 }),
+    });
+    if (!r.ok) throw new Error('Cloudflare TURN ' + r.status);
+    return cleanIce((await r.json()).iceServers);
+  }
+  if (env.METERED_TURN_URL) {
+    const r = await fetchImpl(env.METERED_TURN_URL);
+    if (!r.ok) throw new Error('Metered TURN ' + r.status);
+    return cleanIce(await r.json());
+  }
+  if (env.TURN_URLS && env.TURN_USERNAME && env.TURN_CREDENTIAL) {
+    return [{ urls: env.TURN_URLS.split(',').map((s) => s.trim()).filter(Boolean), username: env.TURN_USERNAME, credential: env.TURN_CREDENTIAL }];
+  }
+  return [];
+}
+
+/** Liste STUN + relais, gardée 12 h en mémoire (les identifiants Cloudflare valent 24 h). */
+async function iceServers(env = process.env, fetchImpl = globalThis.fetch, now = Date.now()) {
+  if (iceCache.list && now < iceCache.until) return iceCache.list;
+  if (!iceCache.pending) {
+    iceCache.pending = fetchTurn(env, fetchImpl)
+      .then((turn) => {
+        iceCache.list = [STUN, ...turn];
+        iceCache.until = now + (turn.length ? 12 * 3600e3 : 60e3);
+        return iceCache.list;
+      })
+      .catch((err) => {
+        console.error('[ice]', err.message);
+        iceCache.until = 0;
+        return [STUN];
+      })
+      .finally(() => (iceCache.pending = null));
+  }
+  return iceCache.pending;
+}
+iceServers.reset = () => Object.assign(iceCache, { list: null, until: 0, pending: null });
 
 async function signal(st, code, pid, body) {
   const room = await st.load(code);
@@ -208,7 +253,7 @@ async function handler(req, res) {
 
     if (req.method === 'GET') {
       const q = req.query || Object.fromEntries(new URL(req.url, 'http://localhost').searchParams);
-      if (q.ice) return send(200, { ok: true, iceServers: iceServers() });
+      if (q.ice) return send(200, { ok: true, iceServers: await iceServers() });
       const code = normCode(q.code);
       const out = await poll(st, code, pid, Number(q.v) || 0, now);
       if (q.sig === '1' && out.ok && !out.gone) {

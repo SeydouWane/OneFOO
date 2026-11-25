@@ -234,6 +234,40 @@ async function autoMove(c) {
   assert.strictEqual(createStore({ VERCEL: '1' }), null, 'sur Vercel sans base : mode amis désactivé');
   console.log('✔ adaptateur Upstash Redis');
 
+  // ---------- relais audio TURN (Cloudflare) : identifiants générés côté serveur, port 53 retiré, cache
+  const { iceServers } = require('../src/api');
+  const turnCalls = [];
+  const cfFetch = async (url, opts) => {
+    turnCalls.push([url, opts.headers.Authorization, JSON.parse(opts.body).ttl]);
+    return {
+      ok: true,
+      json: async () => ({
+        iceServers: [
+          { urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.cloudflare.com:53'] },
+          { urls: ['turn:turn.cloudflare.com:3478?transport=udp', 'turn:turn.cloudflare.com:53?transport=udp', 'turns:turn.cloudflare.com:443?transport=tcp'], username: 'u', credential: 'c' },
+        ],
+      }),
+    };
+  };
+  iceServers.reset();
+  const cfEnv = { CF_TURN_KEY_ID: 'cle', CF_TURN_API_TOKEN: 'jeton' };
+  const ice1 = await iceServers(cfEnv, cfFetch);
+  assert.strictEqual(turnCalls[0][0], 'https://rtc.live.cloudflare.com/v1/turn/keys/cle/credentials/generate-ice-servers');
+  assert.strictEqual(turnCalls[0][1], 'Bearer jeton');
+  const relay = ice1.find((s) => s.username === 'u');
+  assert.deepStrictEqual(relay.urls, ['turn:turn.cloudflare.com:3478?transport=udp', 'turns:turn.cloudflare.com:443?transport=tcp'], 'port 53 retiré');
+  assert.ok(ice1[0].urls[0].startsWith('stun:'), 'STUN toujours en premier');
+  await iceServers(cfEnv, cfFetch);
+  assert.strictEqual(turnCalls.length, 1, 'identifiants gardés en cache');
+  iceServers.reset();
+  const down = await iceServers(cfEnv, async () => ({ ok: false, status: 500 }));
+  assert.ok(down.length === 1 && down[0].urls[0].startsWith('stun:'), 'relais en panne : STUN seul');
+  iceServers.reset();
+  const fixed = await iceServers({ TURN_URLS: 'turn:a:3478, turns:a:443', TURN_USERNAME: 'x', TURN_CREDENTIAL: 'y' });
+  assert.deepStrictEqual(fixed[1].urls, ['turn:a:3478', 'turns:a:443'], 'relais fixe');
+  iceServers.reset();
+  console.log('✔ relais audio TURN');
+
   console.log('✔ api tests OK');
   server.close();
   process.exit(0);

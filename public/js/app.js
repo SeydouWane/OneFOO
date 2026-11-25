@@ -470,6 +470,8 @@
     active: false,
     peers: new Map(),
     retryAt: new Map(),
+    failures: new Map(),
+    unlockArmed: false,
     calling: new Set(),
     iceServers: null,
     icePromise: null,
@@ -501,7 +503,8 @@
             return DEFAULT_ICE;
           });
       }
-      return Promise.race([this.icePromise, new Promise((r) => setTimeout(() => r(DEFAULT_ICE), 1500))]);
+      // le relais (TURN) est indispensable entre deux téléphones en données mobiles : on l'attend un peu
+      return Promise.race([this.icePromise, new Promise((r) => setTimeout(() => r(DEFAULT_ICE), 4000))]);
     },
     send(to, data) {
       if (!net.code) return;
@@ -581,10 +584,13 @@
       const peer = { pc, session, audio: null, an: null, timer: null, gathered: trackGathering(pc, servers) };
       pc.ontrack = (e) => this.attach(peer, e.streams[0] || new MediaStream([e.track]));
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'connected') clearTimeout(peer.timer);
-        if (pc.connectionState === 'failed') this.close(id, true);
+        if (pc.connectionState === 'connected') {
+          clearTimeout(peer.timer);
+          this.failures.delete(id);
+        }
+        if (pc.connectionState === 'failed') this.fail(id);
       };
-      peer.timer = setTimeout(() => pc.connectionState !== 'connected' && this.close(id, true), 20000);
+      peer.timer = setTimeout(() => pc.connectionState !== 'connected' && this.fail(id), 20000);
       this.peers.set(id, peer);
       return peer;
     },
@@ -643,8 +649,9 @@
         document.body.append(peer.audio);
       }
       peer.audio.srcObject = stream;
-      peer.audio.muted = muted;
-      peer.audio.play().catch(() => toast('Touchez l’écran pour entendre vos amis'));
+      // les voix des amis ne dépendent pas du bouton 🔊 (qui coupe le jeu et le système)
+      peer.audio.muted = false;
+      peer.audio.play().catch(() => this.unlockLater());
       const ctx = audioCtx();
       if (ctx && !peer.an) {
         try {
@@ -669,6 +676,28 @@
       if (el) el.classList.remove('talking');
       if (retry) this.retryAt.set(id, Date.now() + 4000);
     },
+    /** Liaison impossible : on réessaie, et on le dit (une fois) pour ne pas laisser croire que l'ami se tait. */
+    fail(id) {
+      this.close(id, true);
+      const n = (this.failures.get(id) || 0) + 1;
+      this.failures.set(id, n);
+      if (n === 2) {
+        const p = state.room && state.room.players.find((x) => x.id === id);
+        toast(`🎙️ Son impossible avec ${p ? p.name : 'un ami'} : le réseau bloque la liaison. Nouvel essai…`, 'bad');
+      }
+    },
+    /** Le téléphone a bloqué la lecture automatique : on relance au prochain toucher. */
+    unlockLater() {
+      if (this.unlockArmed) return;
+      this.unlockArmed = true;
+      toast('Touchez l’écran pour entendre vos amis');
+      const unlock = () => {
+        this.unlockArmed = false;
+        window.removeEventListener('pointerdown', unlock, true);
+        for (const p of this.peers.values()) if (p.audio && p.audio.paused) p.audio.play().catch(() => {});
+      };
+      window.addEventListener('pointerdown', unlock, true);
+    },
     closeAll() {
       for (const id of [...this.peers.keys()]) this.close(id);
     },
@@ -678,9 +707,6 @@
       this.active = false;
       clearInterval(this.meterTimer);
       this.meterTimer = null;
-    },
-    setMuted(m) {
-      for (const p of this.peers.values()) if (p.audio) p.audio.muted = m;
     },
     startMeter() {
       if (this.meterTimer) return;
@@ -2167,10 +2193,9 @@
     muted = !muted;
     store.set('onefoo.muted', muted);
     soundBtn.textContent = muted ? '🔇' : '🔊';
-    voice.setMuted(muted);
     if (muted) tts.stop();
     else sfx('turn');
-    toast(muted ? 'Son coupé (jeu, voix du système et des amis)' : 'Son activé');
+    toast(muted ? 'Son du jeu et voix du système coupés (vos amis restent audibles)' : 'Son activé');
   });
 
   // Minuteur de tour (parties entre amis)

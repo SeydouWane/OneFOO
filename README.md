@@ -121,15 +121,26 @@ Pour changer le mot de passe admin : recalculez l'empreinte, remplacez `ADMIN_PA
 
 ### Micro sur réseau mobile (optionnel)
 
-Le micro utilise des serveurs STUN publics, ce qui suffit sur la plupart des Wi-Fi. Certains réseaux mobiles bloquent la
-connexion directe entre deux téléphones : dans ce cas, ajoutez un serveur **TURN** (par exemple l'offre gratuite de
-Metered « Open Relay » ou Cloudflare Realtime TURN) avec ces variables d'environnement dans Vercel, puis redéployez :
+Le micro relie les téléphones directement (serveurs STUN publics). Cela marche dès qu'un des deux est sur un Wi-Fi
+« ouvert », mais **entre deux téléphones en données mobiles** (opérateurs qui partagent une adresse entre clients),
+la liaison directe échoue souvent : il faut un **relais TURN**. Ajoutez l'un de ces réglages dans Vercel, puis redéployez :
 
 ```
+# Cloudflare Realtime TURN (recommandé) — dash.cloudflare.com > Realtime > TURN : créer une clé
+CF_TURN_KEY_ID=...        # identifiant de la clé TURN
+CF_TURN_API_TOKEN=...     # jeton d'API de la clé (reste sur le serveur)
+
+# ou Metered / Open Relay — l'adresse complète avec la clé d'API
+METERED_TURN_URL=https://<app>.metered.live/api/v1/turn/credentials?apiKey=...
+
+# ou un serveur TURN fixe
 TURN_URLS=turn:exemple.relay.com:80,turn:exemple.relay.com:443?transport=tcp
 TURN_USERNAME=...
 TURN_CREDENTIAL=...
 ```
+
+Avec Cloudflare, le serveur génère des identifiants valables 24 h (gardés 12 h en cache) ; la clé n'est jamais envoyée
+aux téléphones. Une voix relayée consomme environ 20 Mo par heure et par personne écoutée.
 
 Ordre de grandeur des quotas gratuits : une partie de 10 min à 4 humains représente environ 2 000 requêtes à Redis
 et autant d'appels de fonction. L'offre gratuite d'Upstash et l'offre Hobby de Vercel suffisent donc pour quelques centaines
