@@ -3,7 +3,10 @@
   "framework": null,
   "outputDirectory": "public",
   "regions": ["cdg1"],
-  "rewrites": [{ "source": "/r/:code", "destination": "/index.html" }],
+  "rewrites": [
+    { "source": "/r/:code", "destination": "/index.html" },
+    { "source": "/admin", "destination": "/admin.html" }
+  ],
   "headers": [
     {
       "source": "/(.*)",

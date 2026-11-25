@@ -36,11 +36,118 @@ function deserialize(v, d) {
   return room;
 }
 
+/**
+ * Mini Redis en mémoire (développement local et tests) : juste les commandes utilisées par les comptes,
+ * classements et statistiques. Mêmes formats de réponse qu'Upstash.
+ */
+class MiniRedis {
+  constructor() {
+    this.kv = new Map();
+    this.z = new Map();
+    this.exp = new Map();
+  }
+  alive(k) {
+    const e = this.exp.get(k);
+    if (e && e < Date.now()) {
+      this.kv.delete(k);
+      this.z.delete(k);
+      this.exp.delete(k);
+      return false;
+    }
+    return this.kv.has(k) || this.z.has(k);
+  }
+  zsorted(k) {
+    const z = this.alive(k) ? this.z.get(k) || new Map() : new Map();
+    return [...z.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  }
+  exec([cmd, ...a]) {
+    const fmt = (n) => String(n);
+    switch (String(cmd).toUpperCase()) {
+      case 'GET':
+        return this.alive(a[0]) ? this.kv.get(a[0]) : null;
+      case 'SET': {
+        const [k, v, ...opts] = a;
+        let nx = false;
+        let ex = null;
+        for (let i = 0; i < opts.length; i++) {
+          const o = String(opts[i]).toUpperCase();
+          if (o === 'NX') nx = true;
+          else if (o === 'EX') ex = Number(opts[++i]);
+        }
+        if (nx && this.alive(k)) return null;
+        this.kv.set(k, String(v));
+        if (ex) this.exp.set(k, Date.now() + ex * 1000);
+        else this.exp.delete(k);
+        return 'OK';
+      }
+      case 'DEL':
+        return a.reduce((n, k) => n + (this.kv.delete(k) || this.z.delete(k) ? 1 : 0), 0);
+      case 'MGET':
+        return a.map((k) => (this.alive(k) ? this.kv.get(k) ?? null : null));
+      case 'INCRBY': {
+        const v = Number((this.alive(a[0]) && this.kv.get(a[0])) || 0) + Number(a[1]);
+        this.kv.set(a[0], String(v));
+        return v;
+      }
+      case 'EXPIRE':
+        if (!this.alive(a[0])) return 0;
+        this.exp.set(a[0], Date.now() + Number(a[1]) * 1000);
+        return 1;
+      case 'ZINCRBY': {
+        const [k, by, m] = a;
+        if (!this.alive(k)) this.z.set(k, new Map());
+        const z = this.z.get(k) || new Map();
+        z.set(m, (z.get(m) || 0) + Number(by));
+        this.z.set(k, z);
+        return fmt(z.get(m));
+      }
+      case 'ZADD': {
+        const [k, score, m] = a;
+        const z = (this.alive(k) && this.z.get(k)) || new Map();
+        const isNew = !z.has(m);
+        z.set(m, Number(score));
+        this.z.set(k, z);
+        return isNew ? 1 : 0;
+      }
+      case 'ZREM': {
+        const z = this.alive(a[0]) && this.z.get(a[0]);
+        return z && z.delete(a[1]) ? 1 : 0;
+      }
+      case 'ZREVRANGE': {
+        const [k, start, stop, ws] = a;
+        const s = this.zsorted(k);
+        const end = Number(stop) < 0 ? s.length + Number(stop) : Number(stop);
+        const part = s.slice(Number(start), end + 1);
+        return ws ? part.flatMap(([m, v]) => [m, fmt(v)]) : part.map(([m]) => m);
+      }
+      case 'ZREVRANK': {
+        const i = this.zsorted(a[0]).findIndex(([m]) => m === a[1]);
+        return i === -1 ? null : i;
+      }
+      case 'ZSCORE': {
+        const z = this.alive(a[0]) && this.z.get(a[0]);
+        return z && z.has(a[1]) ? fmt(z.get(a[1])) : null;
+      }
+      case 'ZCARD':
+        return this.alive(a[0]) ? (this.z.get(a[0]) || new Map()).size : 0;
+      default:
+        throw new Error('MiniRedis : commande non gérée ' + cmd);
+    }
+  }
+}
+
 class MemoryStore {
   constructor() {
     this.map = new Map();
     this.sig = new Map();
+    this.mini = new MiniRedis();
     this.kind = 'memory';
+  }
+  async redis(...args) {
+    return this.mini.exec(args.map((x) => (typeof x === 'number' ? String(x) : x)));
+  }
+  async pipeline(cmds) {
+    return cmds.map((c) => this.mini.exec(c.map((x) => (typeof x === 'number' ? String(x) : x))));
   }
   async pushSignal(code, to, msg) {
     const key = sigKey(code, to);
@@ -91,6 +198,28 @@ class UpstashStore {
     if (!res.ok || json.error) throw new Error(`Upstash ${args[0]} : ${json.error || res.status}`);
     return json.result;
   }
+  /** Commande Redis générique (comptes, classements, statistiques). */
+  async redis(...args) {
+    return this.cmd(args.map((x) => (typeof x === 'number' ? String(x) : x)));
+  }
+  /** Plusieurs commandes en un seul aller-retour (API pipeline d'Upstash). */
+  async pipeline(cmds) {
+    if (!cmds.length) return [];
+    const res = await this.fetch(this.url + '/pipeline', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(cmds.map((c) => c.map((x) => (typeof x === 'number' ? String(x) : x)))),
+    });
+    let json = [];
+    try {
+      json = await res.json();
+    } catch (_) {}
+    if (!res.ok || !Array.isArray(json)) throw new Error(`Upstash pipeline : ${res.status}`);
+    return json.map((r) => {
+      if (r && r.error) throw new Error('Upstash : ' + r.error);
+      return r ? r.result : null;
+    });
+  }
   async load(code) {
     const [v, d] = (await this.cmd(['HMGET', PREFIX + code, 'v', 'd'])) || [];
     if (!v || !d) return null;
@@ -121,4 +250,4 @@ function createStore(env = process.env) {
   return new MemoryStore();
 }
 
-module.exports = { createStore, MemoryStore, UpstashStore, CAS_SCRIPT, SIG_PUSH_SCRIPT, SIG_TAKE_SCRIPT, PREFIX, TTL_SECONDS };
+module.exports = { createStore, MemoryStore, UpstashStore, MiniRedis, CAS_SCRIPT, SIG_PUSH_SCRIPT, SIG_TAKE_SCRIPT, PREFIX, TTL_SECONDS };

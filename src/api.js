@@ -14,15 +14,28 @@
 const crypto = require('crypto');
 const { GameError } = require('../public/js/core/rooms-core.js');
 const { GAMES, roomsFor } = require('./games');
-const { createStore } = require('./store');
+const { getStore, setStore } = require('./db');
+const Account = require('./account');
 
 const SECRET_RE = /^[a-f0-9]{24,64}$/i;
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const PRESENCE_MS = 15000; // on note la présence d'un joueur au plus toutes les 15 s
 
-let store; // créé à la première requête (réutilisé tant que l'instance vit)
-const getStore = () => (store === undefined ? (store = createStore()) : store);
-const setStore = (s) => (store = s); // tests
+/** Une manche vient de se terminer : à enregistrer une seule fois (points des joueurs connectés, statistiques). */
+function markRecord(r) {
+  const g = r.game;
+  if (!g || g.status === 'playing' || r.recordedGameId === g.id) return false;
+  r.recordedGameId = g.id;
+  return true;
+}
+async function recordIfNeeded(st, room, out) {
+  if (!out || !out.record) return;
+  try {
+    await Account.recordRoomGame(st, room);
+  } catch (err) {
+    console.error('[classement]', err); // ne jamais bloquer la partie pour une statistique
+  }
+}
 
 const publicId = (secret) => 'p' + crypto.createHash('sha256').update('onefoo:' + secret.toLowerCase()).digest('hex').slice(0, 16);
 const normCode = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
@@ -89,7 +102,7 @@ async function poll(st, code, pid, v, now) {
   const loaded = await st.load(code);
   const me = loaded && loaded.players.find((p) => p.id === pid);
   if (!loaded || !me || me.isBot) return { ok: true, gone: true };
-  const { room } = await mutate(
+  const { room, out } = await mutate(
     st,
     code,
     (r) => {
@@ -100,17 +113,20 @@ async function poll(st, code, pid, v, now) {
         changed = true;
       }
       if (roomsFor(r).advance(r, now)) changed = true;
-      return changed ? null : { noWrite: true };
+      const record = markRecord(r);
+      return changed || record ? { record } : { noWrite: true };
     },
     loaded
   );
+  await recordIfNeeded(st, room, out);
   if (room.version === v) return { ok: true, same: true, serverNow: now };
   return { ok: true, state: roomsFor(room).view(room, pid, now) };
 }
 
-async function action(st, pid, body, now) {
+async function action(st, pid, body, now, user) {
   const a = String(body.action || '');
-  const who = { id: pid, name: body.name, avatar: body.avatar };
+  // Joueur connecté à un compte : son pseudo et son avatar ; ses résultats compteront au classement
+  const who = user ? { id: pid, name: user.name, avatar: user.avatar, uid: user.id } : { id: pid, name: body.name, avatar: body.avatar };
 
   if (a === 'create') {
     for (let i = 0; i < 8; i++) {
@@ -137,11 +153,12 @@ async function action(st, pid, body, now) {
 
   if (a === 'leave') {
     try {
-      const { out } = await mutate(st, code, (r) => {
+      const { room, out } = await mutate(st, code, (r) => {
         const empty = roomsFor(r).leave(r, pid);
         if (!empty) roomsFor(r).advance(r, now);
-        return { empty };
+        return { empty, record: !empty && markRecord(r) };
       });
+      await recordIfNeeded(st, room, out);
       if (out.empty) await st.remove(code);
     } catch (err) {
       if (!(err instanceof GameError)) throw err; // salon déjà disparu : rien à faire
@@ -152,8 +169,9 @@ async function action(st, pid, body, now) {
   const { room, out } = await mutate(st, code, (r) => {
     const res = roomsFor(r).act(r, pid, a, body, now);
     roomsFor(r).advance(r, now);
-    return { res };
+    return { res, record: markRecord(r) };
   });
+  await recordIfNeeded(st, room, out);
   return { ok: true, ...(out.res || {}), state: roomsFor(room).view(room, pid, now) };
 }
 
@@ -207,7 +225,8 @@ async function handler(req, res) {
         if (err instanceof GameError) throw err;
         throw new GameError('Requête invalide.');
       }
-      return send(200, await action(st, pid, body || {}, now));
+      const user = req.headers['x-onefoo-session'] ? await Account.userFromRequest(st, req) : null;
+      return send(200, await action(st, pid, body || {}, now, user));
     }
     send(405, { ok: false, error: 'Méthode non autorisée.' });
   } catch (err) {

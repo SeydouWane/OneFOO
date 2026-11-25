@@ -338,10 +338,13 @@
   // ================================================================ réseau (mode entre amis)
   const net = { code: null, version: 0, timer: null, inflight: false };
 
-  async function request(method, body, query = '') {
-    const res = await fetch('/api/room' + query, {
+  async function request(method, body, query = '', path = '/api/room') {
+    const headers = { 'Content-Type': 'application/json', 'X-OneFOO-Key': secret };
+    const token = store.get('onefoo.session', null); // compte OneFOO (facultatif)
+    if (token) headers['X-OneFOO-Session'] = token;
+    const res = await fetch(path + query, {
       method,
-      headers: { 'Content-Type': 'application/json', 'X-OneFOO-Key': secret },
+      headers,
       body: body ? JSON.stringify(body) : undefined,
       cache: 'no-store',
     });
@@ -876,6 +879,12 @@
 
   function syncProfile() {
     if (state.room && state.room.mode === 'friends' && state.room.status !== 'playing') api('profile');
+    if (account.token) {
+      account
+        .call('POST', { action: 'profile', name: me.name, avatar: me.avatar })
+        .then((r) => r && r.user && account.setUser(r.user))
+        .catch(() => {});
+    }
   }
   function setName(v) {
     v = Core.sanitizeName(v);
@@ -924,6 +933,251 @@
   $('#tileAligne4').addEventListener('click', () => openGame('aligne4'));
   $('#tileAwale').addEventListener('click', () => openGame('awale'));
   $('#tileDames').addEventListener('click', () => openGame('dames'));
+
+  // ================================================================ compte OneFOO (facultatif) et classements
+  const Countries = window.Countries;
+  const GAME_KINDS = ['foo', 'morpion', 'aligne4', 'awale', 'dames'];
+  const countryLabel = (c) => `${Countries.flag(c.code)} ${c.name}`;
+  const plural = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`;
+  const userLine = (u) => `${plural(u.points || 0, 'point')} · ${plural(u.games || 0, 'partie')}`;
+
+  const account = {
+    token: store.get('onefoo.session', null),
+    user: store.get('onefoo.user', null),
+    async call(method, body, query = '') {
+      const headers = { 'Content-Type': 'application/json', 'X-OneFOO-Key': secret };
+      if (this.token) headers['X-OneFOO-Session'] = this.token;
+      const res = await fetch('/api/account' + query, { method, headers, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
+      return res.json();
+    },
+    /** Le serveur fait foi : pseudo, avatar et niveaux du système viennent du compte. */
+    setUser(u) {
+      this.user = u;
+      store.set('onefoo.user', u);
+      if (u) {
+        me.name = u.name;
+        me.avatar = u.avatar;
+        store.set('onefoo.name', u.name);
+        store.set('onefoo.avatar', u.avatar);
+        nameInput.value = u.name;
+        $('#avatarBtn').textContent = u.avatar;
+        for (const k of GAME_KINDS) {
+          const s = u.stats && u.stats[k];
+          if (!s) continue;
+          // niveau du système : le même sur tous les appareils du compte
+          const local = statsFor(k);
+          local.level = s.level;
+          local.best = Math.max(local.best, s.best, s.level);
+          saveStats(k);
+        }
+        if (state.screen === 'hub') renderHub();
+      }
+      renderAccountRow();
+    },
+    signIn(token, user) {
+      this.token = token;
+      store.set('onefoo.session', token);
+      this.setUser(user);
+    },
+    clear() {
+      this.token = null;
+      this.user = null;
+      store.del('onefoo.session');
+      store.del('onefoo.user');
+      renderAccountRow();
+    },
+    /** Au démarrage : on renouvelle la session (l'appareil reste connecté très longtemps). */
+    async refresh() {
+      if (!this.token) return;
+      try {
+        const r = await this.call('GET', null, '?me=1');
+        if (r && r.ok) r.user ? this.setUser(r.user) : this.clear();
+      } catch {}
+    },
+    /** Résultat d'une partie contre le système (compte = points au classement ; anonyme = statistiques). */
+    async report(kind, gameId, outcome, opponents) {
+      try {
+        const r = await this.call('POST', { action: 'result', kind, gameId, outcome, opponents });
+        if (r && r.user) {
+          this.setUser(r.user);
+          if (r.points) toast(`+${r.points} points au classement 🏆`, 'good');
+        }
+      } catch {}
+    },
+  };
+
+  function renderAccountRow() {
+    const row = $('#accountRow');
+    const u = account.user;
+    if (u) {
+      row.replaceChildren(
+        h('div', { class: 'acc-info' }, h('b', { text: `${Countries.flag(u.country)} ${u.name}` }), h('span', { text: userLine(u) })),
+        h('button', { class: 'btn secondary', text: 'Mon compte', onclick: openMe })
+      );
+    } else {
+      row.replaceChildren(
+        h('div', { class: 'acc-info' }, h('b', { text: 'Jouez sans compte…' }), h('span', { text: '…ou créez-en un pour apparaître dans les classements.' })),
+        h(
+          'div',
+          { class: 'acc-btns' },
+          h('button', { class: 'btn primary', text: 'Créer un compte', onclick: () => openAccount('register') }),
+          h('button', { class: 'btn secondary', text: 'Se connecter', onclick: () => openAccount('login') })
+        )
+      );
+    }
+  }
+
+  // ----- formulaire d'inscription / connexion
+  const acCountry = $('#acCountry');
+  acCountry.replaceChildren(...Countries.LIST.map((c) => h('option', { value: c.code, text: `${countryLabel(c)} (+${c.dial})` })));
+  acCountry.value = 'SN';
+  const updateDial = () => {
+    $('#acDial').textContent = '+' + (Countries.BY_CODE[acCountry.value] || { dial: '' }).dial;
+    $('#acPhone').placeholder = acCountry.value === 'SN' ? '77 123 45 67' : 'Votre numéro';
+  };
+  acCountry.addEventListener('change', updateDial);
+  updateDial();
+  let accountTab = 'register';
+  function setAccountTab(tab) {
+    accountTab = tab;
+    $$('#accountTabs button').forEach((b) => b.classList.toggle('sel', b.dataset.tab === tab));
+    $('#accountForm').classList.toggle('login-mode', tab === 'login');
+    $('#acSubmit').textContent = tab === 'login' ? 'Me connecter' : 'Créer mon compte';
+    $('#acPassword').setAttribute('autocomplete', tab === 'login' ? 'current-password' : 'new-password');
+  }
+  $$('#accountTabs button').forEach((b) => b.addEventListener('click', () => setAccountTab(b.dataset.tab)));
+  function openAccount(tab = 'register') {
+    setAccountTab(tab);
+    $('#acName').value = me.name || nameInput.value.trim();
+    openModal('accountModal');
+  }
+  $('#accountForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    guarded(async () => {
+      const body = { country: acCountry.value, phone: $('#acPhone').value, password: $('#acPassword').value };
+      if (accountTab === 'register') {
+        const sex = $('input[name="acSex"]:checked');
+        Object.assign(body, {
+          action: 'register',
+          name: $('#acName').value.trim() || me.name,
+          avatar: me.avatar,
+          sex: sex ? sex.value : '',
+          consent: $('#acConsent').checked,
+          levels: Object.fromEntries(GAME_KINDS.map((k) => [k, statsFor(k).level])),
+        });
+      } else body.action = 'login';
+      let r;
+      try {
+        r = await account.call('POST', body);
+      } catch {
+        return toast('Pas de connexion au serveur…', 'bad');
+      }
+      if (!r || !r.ok) return toast((r && r.error) || 'Erreur, réessayez.', 'bad');
+      account.signIn(r.token, r.user);
+      $('#acPassword').value = '';
+      closeModal('accountModal');
+      toast(accountTab === 'login' ? `Bon retour, ${r.user.name} !` : `Bienvenue, ${r.user.name} ! Vos parties comptent maintenant au classement.`, 'good');
+    });
+  });
+
+  // ----- mon compte
+  function openMe() {
+    const u = account.user;
+    if (!u) return openAccount('login');
+    const c = Countries.BY_CODE[u.country] || { name: u.country };
+    $('#meHead').replaceChildren(
+      h('span', { class: 'me-av', text: u.avatar }),
+      h('div', {}, h('b', { text: u.name }), h('span', { text: `${Countries.flag(u.country)} ${c.name} · ${u.phone}` }), h('span', { class: 'me-pts', text: userLine(u) }))
+    );
+    $('#meStats').replaceChildren(
+      ...GAME_KINDS.map((k) => {
+        const s = u.stats[k];
+        return h('li', {}, h('b', { text: GAME_NAMES[k] }), h('span', { text: `${s.points} pts · ${s.wins} victoire${s.wins > 1 ? 's' : ''} / ${s.games} partie${s.games > 1 ? 's' : ''} · niveau ${s.level}` }));
+      })
+    );
+    openModal('meModal');
+  }
+  $('#logoutBtn').addEventListener('click', async () => {
+    if (!confirm('Se déconnecter de cet appareil ? Vous pourrez vous reconnecter avec votre numéro et votre mot de passe.')) return;
+    try {
+      await account.call('POST', { action: 'logout' });
+    } catch {}
+    account.clear();
+    closeModal('meModal');
+    toast('Déconnecté. Vous jouez maintenant sans compte.');
+  });
+  $('#meRanksBtn').addEventListener('click', () => {
+    closeModal('meModal');
+    openRanks();
+  });
+
+  // ----- classements
+  const rankState = { board: 'all', country: '' };
+  $('#rankTabs').replaceChildren(
+    ...['all', ...GAME_KINDS].map((b) =>
+      h('button', { 'data-board': b, role: 'tab', text: b === 'all' ? 'OneFOO' : GAME_NAMES[b], onclick: () => ((rankState.board = b), loadRanks()) })
+    )
+  );
+  $('#rankCountry').replaceChildren(h('option', { value: '', text: '🌍 Tous les pays' }), ...Countries.LIST.map((c) => h('option', { value: c.code, text: countryLabel(c) })));
+  $('#rankCountry').addEventListener('change', (e) => {
+    rankState.country = e.target.value;
+    loadRanks();
+  });
+  function openRanks() {
+    show('ranks');
+    loadRanks();
+  }
+  $('#ranksBtn').addEventListener('click', openRanks);
+
+  async function loadRanks() {
+    $$('#rankTabs button').forEach((b) => b.classList.toggle('sel', b.dataset.board === rankState.board));
+    const list = $('#rankList');
+    list.replaceChildren(h('li', { class: 'rank-empty', text: 'Chargement…' }));
+    let r;
+    try {
+      r = await account.call('GET', null, `?lb=${rankState.board}${rankState.country ? '&country=' + rankState.country : ''}&limit=50`);
+    } catch {
+      r = null;
+    }
+    if (!r || !r.ok) {
+      list.replaceChildren(h('li', { class: 'rank-empty', text: (r && r.error) || 'Classement indisponible pour le moment.' }));
+      return;
+    }
+    const medal = (n) => ['🥇', '🥈', '🥉'][n - 1] || String(n);
+    list.replaceChildren(
+      ...(r.entries.length
+        ? r.entries.map((e) =>
+            h(
+              'li',
+              { class: 'rank-item' + (e.isMe ? ' me' : '') },
+              h('span', { class: 'rk', text: medal(e.rank) }),
+              h('span', { class: 'rk-av', text: e.avatar }),
+              h(
+                'span',
+                { class: 'rk-name' },
+                h('b', { text: `${e.name}${e.isMe ? ' (vous)' : ''}` }),
+                h('small', { text: `${Countries.flag(e.country)} ${e.wins} victoire${e.wins > 1 ? 's' : ''} · ${e.games} partie${e.games > 1 ? 's' : ''}${e.best ? ` · niv. ${e.best}` : ''}` })
+              ),
+              h('span', { class: 'rk-pts', text: `${e.points} pts` })
+            )
+          )
+        : [h('li', { class: 'rank-empty', text: 'Personne n’est encore classé ici. Soyez le premier !' })])
+    );
+    const mine = $('#myRank');
+    if (account.user && r.me) {
+      mine.classList.remove('hidden');
+      mine.replaceChildren(`Votre rang : `, h('b', { text: `${r.me.rank}ᵉ` }), ` sur ${r.total} · ${r.me.points} points`);
+    } else if (!account.user) {
+      mine.classList.remove('hidden');
+      mine.replaceChildren(
+        h('span', { text: 'Vous jouez sans compte : vos parties ne sont pas classées. ' }),
+        h('button', { class: 'link-btn', text: 'Créer un compte', onclick: () => openAccount('register') })
+      );
+    } else {
+      mine.classList.remove('hidden');
+      mine.replaceChildren('Pas encore classé ici : jouez une partie pour marquer vos premiers points !');
+    }
+  }
 
   // Lien d'invitation : /r/CODE ou ?code=CODE
   (function parseInvite() {
@@ -1206,7 +1460,7 @@
         return;
       }
       leaveToHub();
-    } else if (state.screen === 'hub') show('home', true);
+    } else if (state.screen === 'hub' || state.screen === 'ranks') show('home', true);
   });
 
   // ================================================================ cartes
@@ -1396,6 +1650,7 @@
           } else if (draw) stats.draws = (stats.draws || 0) + 1;
           else stats.losses++;
           saveStats(kind);
+          account.report(kind, g.id, iWon ? 'win' : draw ? 'draw' : 'loss', 1);
         }
         const lv = stats.level;
         $('#levelUp').classList.toggle('hidden', before === null);
@@ -1954,6 +2209,7 @@
           stats.best = Math.max(stats.best, stats.level);
         } else stats.losses++;
         saveStats('foo');
+        account.report('foo', g.id, iWon ? 'win' : 'loss', Math.max(1, g.players.length - 1));
       }
       $('#levelUp').classList.toggle('hidden', before === null);
       if (room.mode === 'solo') {
@@ -2048,6 +2304,8 @@
 
   // ================================================================ démarrage
   renderHub();
+  renderAccountRow();
+  account.refresh();
   if (state.pendingJoin) tryPendingJoin();
   else if (!solo.restore()) {
     const code = store.get('onefoo.room', null);

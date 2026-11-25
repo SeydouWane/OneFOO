@@ -8,6 +8,8 @@ const path = require('path');
 const os = require('os');
 const express = require('express');
 const apiHandler = require('./src/api');
+const accountHandler = require('./src/account');
+const adminHandler = require('./src/admin');
 
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -17,6 +19,9 @@ app.disable('x-powered-by');
 app.use(express.static(PUBLIC_DIR));
 app.get('/r/:code', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
 app.all('/api/room', express.json({ limit: '32kb' }), (req, res) => apiHandler(req, res));
+app.all('/api/account', express.json({ limit: '16kb' }), (req, res) => accountHandler(req, res));
+app.all('/api/admin', express.json({ limit: '16kb' }), (req, res) => adminHandler(req, res));
+app.get('/admin', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'admin.html')));
 
 /** Adresses IPv4 du réseau local (recalculées à chaque appel : l'IP Wi-Fi peut changer). */
 function lanAddresses() {

@@ -60,6 +60,9 @@
             <input id="nameInput" maxlength="16" autocomplete="nickname" placeholder="Ex : Ibou" enterkeyhint="done">
           </div>
         </div>
+        <div class="account-row panel" id="accountRow"></div>
+
+        <button class="btn secondary big ranks-btn" id="ranksBtn">🏆 Classements</button>
 
         <h2 class="section-title">Jeux</h2>
         <div class="games">
@@ -135,6 +138,22 @@
           </div>
         </div>
         <button class="link-btn" id="resetLevelBtn">Remettre le système au niveau 1</button>
+      </div>
+    </section>
+
+    <!-- ============ CLASSEMENTS ============ -->
+    <section class="screen" id="screen-ranks">
+      <div class="page">
+        <header class="topbar">
+          <button class="icon-btn" data-go="home" aria-label="Retour">←</button>
+          <h1>Classements</h1>
+          <span class="icon-btn ghost" aria-hidden="true"></span>
+        </header>
+        <div class="rank-tabs" id="rankTabs" role="tablist"></div>
+        <select id="rankCountry" class="select" aria-label="Pays"></select>
+        <div class="my-rank panel hidden" id="myRank"></div>
+        <ol class="rank-list" id="rankList"></ol>
+        <p class="hint" id="rankHint">Les points se gagnent contre le système (plus il est fort, plus ça rapporte) et entre amis. Seuls les joueurs avec un compte sont classés.</p>
       </div>
     </section>
 
@@ -301,6 +320,43 @@
     </div>
   </div>
 
+  <div class="modal" id="accountModal" role="dialog" aria-modal="true" aria-labelledby="accountTitle">
+    <div class="sheet account-sheet">
+      <h3 id="accountTitle">Mon compte OneFOO</h3>
+      <div class="seg two" id="accountTabs">
+        <button data-tab="register" class="sel">Créer un compte</button>
+        <button data-tab="login">Se connecter</button>
+      </div>
+      <form id="accountForm" novalidate>
+        <label class="fld reg-only">Pseudo<input id="acName" maxlength="16" autocomplete="nickname" required></label>
+        <label class="fld">Pays<select id="acCountry" class="select" required></select></label>
+        <label class="fld">Numéro de téléphone
+          <span class="phone-row"><b id="acDial">+221</b><input id="acPhone" type="tel" inputmode="tel" autocomplete="tel-national" placeholder="77 123 45 67" required></span>
+        </label>
+        <fieldset class="fld reg-only sex-row">
+          <legend>Sexe</legend>
+          <label><input type="radio" name="acSex" value="F"> Femme</label>
+          <label><input type="radio" name="acSex" value="M"> Homme</label>
+        </fieldset>
+        <label class="fld">Mot de passe<input id="acPassword" type="password" minlength="6" autocomplete="current-password" required></label>
+        <label class="consent reg-only"><input type="checkbox" id="acConsent"> J'accepte que ces informations servent aux classements OneFOO. Mon numéro et mon sexe ne sont jamais affichés publiquement.</label>
+        <button class="btn primary big" type="submit" id="acSubmit">Créer mon compte</button>
+      </form>
+      <p class="hint">Pas de SMS : votre numéro et votre mot de passe suffisent. Cet appareil restera connecté.</p>
+      <button class="link-btn" data-close>Continuer sans compte</button>
+    </div>
+  </div>
+
+  <div class="modal" id="meModal" role="dialog" aria-modal="true" aria-labelledby="meTitle">
+    <div class="sheet">
+      <h3 id="meTitle">Mon compte</h3>
+      <div class="me-head" id="meHead"></div>
+      <ul class="me-stats" id="meStats"></ul>
+      <button class="btn secondary" id="meRanksBtn">🏆 Voir les classements</button>
+      <button class="link-btn" id="logoutBtn">Se déconnecter de cet appareil</button>
+    </div>
+  </div>
+
   <div class="modal" id="rulesGameModal" role="dialog" aria-modal="true" aria-labelledby="rulesGameTitle">
     <div class="sheet rules">
       <h3 id="rulesGameTitle">Règles</h3>
@@ -313,6 +369,7 @@
   <div class="toasts" id="toasts" aria-live="polite"></div>
   <div class="conn hidden" id="connBanner">Connexion perdue… nouvelle tentative</div>
 
+  <script src="/js/core/countries.js"></script>
   <script src="/js/core/rooms-core.js"></script>
   <script src="/js/core/duel-rooms.js"></script>
   <script src="/js/foo/engine.js"></script>

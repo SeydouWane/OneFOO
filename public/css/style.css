@@ -1,6 +1,13 @@
 /* ============================================================
    OneFOO — styles (mobile d'abord)
    ============================================================ */
+/* Drapeaux des pays : Windows n'a pas d'emoji drapeaux (il affiche « SN »). Police chargée seulement pour ces caractères. */
+@font-face {
+  font-family: 'Twemoji Country Flags';
+  unicode-range: U+1F1E6-1F1FF, U+1F3F4, U+E0062-E007F;
+  src: url('https://cdn.jsdelivr.net/npm/country-flag-emoji-polyfill@0.1.8/dist/TwemojiCountryFlags.woff2') format('woff2');
+  font-display: swap;
+}
 :root {
   --bg: #100f24;
   --bg2: #17153a;
@@ -19,7 +26,7 @@
   --radius: 18px;
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
-  --font: 'Fredoka', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font: 'Twemoji Country Flags', 'Fredoka', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   color-scheme: dark;
 }
 
@@ -773,6 +780,84 @@ input.shake, .shake { animation: shake 0.4s; }
   .opp { width: 86px; }
   .opp-av { width: 58px; height: 58px; font-size: 31px; }
 }
+/* ============================================================
+   COMPTE ONEFOO & CLASSEMENTS
+   ============================================================ */
+.account-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 16px; }
+.acc-info { flex: 1 1 180px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.acc-info b { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acc-info span { font-size: 13px; color: var(--muted); }
+.acc-btns { display: flex; gap: 8px; flex: 1 1 100%; }
+.acc-btns .btn { flex: 1; padding: 11px 10px; font-size: 15px; }
+.account-row > .btn { padding: 10px 14px; font-size: 15px; }
+.ranks-btn { font-size: 17px; padding: 15px; }
+
+select, .select {
+  width: 100%; font: inherit; font-size: 16px; color: var(--text);
+  background: #141233; border: 1.5px solid var(--line); border-radius: 12px; padding: 12px 14px; outline: none;
+}
+select:focus { border-color: var(--accent2); }
+select option { background: #141233; color: var(--text); }
+
+.account-sheet form { display: flex; flex-direction: column; gap: 12px; }
+.fld { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); border: 0; margin: 0; padding: 0; min-width: 0; }
+.fld input, .fld select { color: var(--text); }
+.phone-row { display: flex; align-items: stretch; gap: 8px; }
+.phone-row b {
+  flex: none; display: grid; place-items: center; padding: 0 12px; min-width: 64px;
+  background: var(--panel2); border: 1.5px solid var(--line); border-radius: 12px; color: var(--text); font-size: 16px;
+}
+.phone-row input { flex: 1; min-width: 0; }
+.sex-row legend { padding: 0; margin-bottom: 6px; }
+.sex-row { flex-direction: row; flex-wrap: wrap; gap: 10px; }
+.sex-row legend { flex-basis: 100%; }
+.sex-row label {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px;
+  background: var(--panel2); border: 1.5px solid var(--line); border-radius: 12px; padding: 12px; color: var(--text); font-size: 16px;
+}
+.sex-row label:has(input:checked) { border-color: var(--accent2); background: rgba(255,182,72,0.14); }
+.sex-row input, .consent input { width: auto; accent-color: var(--accent2); }
+.consent { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; color: var(--muted); line-height: 1.35; }
+.consent input { margin-top: 2px; width: 20px; height: 20px; flex: none; }
+#accountForm.login-mode .reg-only { display: none; }
+.seg.two { grid-template-columns: 1fr 1fr; }
+.seg.two button { font-size: 15px; padding: 11px 6px; }
+.account-sheet .seg button.sel, .rank-tabs button.sel { border-color: var(--accent2); background: rgba(255,182,72,0.14); }
+
+.me-head { display: flex; gap: 14px; align-items: center; }
+.me-av { width: 60px; height: 60px; flex: none; border-radius: 50%; background: var(--panel2); display: grid; place-items: center; font-size: 32px; }
+.me-head div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.me-head b { font-size: 19px; }
+.me-head span { font-size: 13px; color: var(--muted); }
+.me-head .me-pts { color: var(--accent2); font-weight: 600; font-size: 14px; }
+.me-stats { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.me-stats li { display: flex; flex-direction: column; gap: 2px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+.me-stats li span { font-size: 13px; color: var(--muted); }
+
+.icon-btn.ghost { visibility: hidden; }
+.rank-tabs { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px 2px; }
+.rank-tabs::-webkit-scrollbar { display: none; }
+.rank-tabs button {
+  flex: none; border: 1.5px solid var(--line); background: var(--panel2); border-radius: 99px;
+  padding: 9px 15px; font-weight: 600; font-size: 15px; white-space: nowrap;
+}
+.my-rank { font-size: 15px; text-align: center; padding: 12px 14px; }
+.my-rank b { color: var(--accent2); font-size: 18px; }
+.my-rank .link-btn { padding: 0 4px; color: var(--accent2); }
+.rank-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.rank-item {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+}
+.rank-item.me { border-color: var(--accent2); background: rgba(255,182,72,0.1); }
+.rk { width: 30px; flex: none; text-align: center; font-weight: 700; font-size: 17px; color: var(--muted); }
+.rk-av { width: 38px; height: 38px; flex: none; border-radius: 50%; background: var(--panel2); display: grid; place-items: center; font-size: 22px; }
+.rk-name { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.rk-name b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-name small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rk-pts { flex: none; font-weight: 700; color: var(--accent2); }
+.rank-empty { text-align: center; color: var(--muted); padding: 22px 10px; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }

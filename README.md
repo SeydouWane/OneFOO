@@ -27,6 +27,18 @@ Contre le système, l'IA calcule de plus en plus de coups à l'avance à chaque 
   Plus le niveau est haut, plus il y a d'adversaires IA (1 → 3), plus ils jouent finement et plus ils vous attrapent si vous oubliez FOO!.
   Ce mode tourne entièrement dans le navigateur : instantané, et la partie reprend après un rechargement de page.
   Le niveau et les statistiques sont enregistrés sur l'appareil (pas de compte nécessaire).
+- **Compte facultatif et classements** : on peut jouer de façon anonyme, sans rien renseigner. Pour apparaître dans les
+  classements, on crée un compte avec pseudo, **pays** (liste déroulante, Sénégal en premier), **numéro de téléphone**
+  (sans SMS de confirmation), **sexe** et mot de passe. Ensuite, on se reconnecte avec son numéro et son mot de passe ;
+  l'appareil reste connecté (session de 400 jours, prolongée à chaque visite).
+  - Classement **OneFOO** (meilleur joueur, tous jeux confondus) et un classement **par jeu**, filtrables par pays.
+  - Points : contre le système, victoire = 10 + 2 × niveau, nul = 3 + niveau / 2 ; entre amis, victoire = 15 (+5 par
+    adversaire en plus), nul = 5, participation = 2.
+  - Le numéro et le sexe ne sont jamais affichés publiquement (classements : pseudo, avatar, drapeau du pays).
+  - Le niveau du système suit le compte d'un appareil à l'autre.
+- **Espace admin** (`/admin`, e-mail + mot de passe) : joueurs inscrits, actifs, parties par jeu (avec compte et anonymes),
+  pays, répartition par sexe, activité des 14 derniers jours, meilleurs joueurs, liste des joueurs avec recherche,
+  export CSV et mot de passe provisoire pour un joueur qui a oublié le sien.
 - **Le système est taquin** : les bots chambrent le joueur (« Je vais pas te ménager aujourd'hui ! », « T'as pas pris de
   déjeuner aujourd'hui ou quoi ? », « Je te gagne ! On rejoue ? »…) dans une bulle, et à voix haute grâce à la synthèse
   vocale du téléphone (une voix par bot). Les répliques dépendent de la partie (début, +2 / +4, pioche, FOO!, attrape,
@@ -52,10 +64,15 @@ public/js/morpion/engine.js  Morpion : règles et IA (minimax en 3×3, heuristiq
 public/js/morpion/rooms.js   Morpion : salons                                                  }
 public/js/aligne4|awale|dames/engine.js, rooms.js  autres jeux à 2 (règles + IA, salons)      }
 public/js/<jeu>/ui.js      affichage de chaque jeu à 2 (plateau, textes, règles), côté navigateur
+public/js/core/countries.js  pays, indicatifs et validation des numéros (partagé navigateur + serveur)
+public/admin.html, js/admin.js  espace admin
 api/room.js                fonction Vercel /api/room (mode entre amis)
+api/account.js, admin.js   fonctions Vercel /api/account (comptes, classements) et /api/admin
 src/api.js                 API : créer / rejoindre / jouer / rafraîchir
+src/account.js             comptes, sessions, points, classements (Redis : ensembles triés)
+src/admin.js               statistiques et liste des joueurs pour l'admin
 src/games.js               registre des jeux (type de salon -> logique du jeu)
-src/store.js               stockage des salons : Upstash Redis (Vercel) ou mémoire (local)
+src/store.js               stockage : Upstash Redis (Vercel) ou mémoire (local)
 local-server.js            serveur de développement local (reproduit Vercel)
 tests/                     tests automatisés
 ```
@@ -78,7 +95,7 @@ npm start
 Ouvrez http://localhost:3000. Pour tester sur votre téléphone, connectez-le au même Wi-Fi et ouvrez l'adresse
 `http://192.168.x.x:3000` affichée dans le terminal au démarrage. En local, les salons sont gardés en mémoire.
 
-Tests : `npm test` (moteur de jeu, salons, API HTTP de bout en bout, adaptateur Redis).
+Tests : `npm test` (moteur de jeu, salons, API HTTP de bout en bout, comptes et classements, admin, adaptateur Redis).
 
 ## Déployer sur Vercel
 
@@ -89,6 +106,18 @@ Tests : `npm test` (moteur de jeu, salons, API HTTP de bout en bout, adaptateur 
 3. Redéployez (onglet *Deployments → Redeploy*) pour que les variables soient prises en compte.
 
 Sans base Redis, le mode contre le système fonctionne déjà ; le mode entre amis affiche un message explicatif.
+
+### Espace admin
+
+Deux variables d'environnement dans Vercel (le mot de passe en clair n'est jamais stocké, ni dans le code ni sur Vercel) :
+
+```
+ADMIN_EMAIL=adresse@exemple.sn
+ADMIN_PASSWORD_HASH=scrypt$...   # empreinte du mot de passe, à calculer avec :
+# node -e "console.log(require('./src/account').hashPassword(process.argv[1]))" 'MotDePasse'
+```
+
+Pour changer le mot de passe admin : recalculez l'empreinte, remplacez `ADMIN_PASSWORD_HASH` dans Vercel, puis redéployez.
 
 ### Micro sur réseau mobile (optionnel)
 
@@ -108,8 +137,11 @@ de parties par mois.
 
 ## Limites actuelles (version simple)
 
-- Le niveau du système est stocké dans le navigateur. Changer de téléphone ou vider les données remet le niveau à 1.
-  Des comptes joueurs pourraient être ajoutés plus tard.
+- Sans compte, le niveau du système est stocké dans le navigateur : changer de téléphone ou vider les données le remet à 1.
+- Les parties contre le système se jouent dans le navigateur, qui envoie le résultat : un tricheur averti pourrait
+  envoyer de fausses victoires (limité à une partie toutes les 5 s, le niveau retenu est celui du serveur). Les parties
+  entre amis, arbitrées par le serveur, sont fiables.
+- Pas de vérification par SMS : rien n'empêche quelqu'un d'utiliser le numéro d'un autre s'il est encore libre.
 - Entre amis, les actions des autres joueurs apparaissent avec ~1 s de décalage (rafraîchissement régulier, pas de temps réel pur).
 - La voix du système dépend des voix françaises installées sur le téléphone (plus naturelle sur les téléphones récents).
 - Le micro nécessite https (fonctionne sur le site en ligne, pas via `http://192.168.x.x` en local) ; jusqu'à 6 joueurs

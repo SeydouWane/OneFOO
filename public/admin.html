@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#100f24">
+  <title>OneFOO · Admin</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/admin.css">
+</head>
+<body>
+  <!-- ============ connexion ============ -->
+  <section class="adm-login" id="loginView">
+    <form class="panel adm-login-box" id="loginForm" novalidate>
+      <div class="logo">One<span>FOO</span></div>
+      <p class="tagline">Espace administrateur</p>
+      <label class="fld">E-mail<input id="lgEmail" type="email" autocomplete="username" required></label>
+      <label class="fld">Mot de passe<input id="lgPassword" type="password" autocomplete="current-password" required></label>
+      <button class="btn primary big" type="submit">Se connecter</button>
+      <p class="adm-error hidden" id="loginError"></p>
+      <a class="link-btn" href="/">← Retour au jeu</a>
+    </form>
+  </section>
+
+  <!-- ============ tableau de bord ============ -->
+  <main class="adm hidden" id="dashView">
+    <header class="adm-top">
+      <div class="logo small">One<span>FOO</span> <em>admin</em></div>
+      <nav class="adm-tabs" role="tablist">
+        <button data-view="overview" class="sel">Vue d'ensemble</button>
+        <button data-view="players">Joueurs</button>
+      </nav>
+      <div class="adm-actions">
+        <button class="btn secondary" id="refreshBtn" title="Actualiser">⟳</button>
+        <button class="btn secondary" id="logoutBtn">Déconnexion</button>
+      </div>
+    </header>
+
+    <section id="view-overview" class="adm-view">
+      <div class="kpis" id="kpis"></div>
+      <div class="adm-grid">
+        <div class="panel">
+          <h2>Activité des 14 derniers jours</h2>
+          <div class="legend"><span class="k-games">Parties</span><span class="k-active">Joueurs actifs</span><span class="k-signups">Inscriptions</span></div>
+          <div class="chart" id="dailyChart"></div>
+        </div>
+        <div class="panel">
+          <h2>Parties par jeu</h2>
+          <table class="tbl" id="perGameTbl"></table>
+        </div>
+        <div class="panel">
+          <h2>Pays</h2>
+          <table class="tbl" id="countryTbl"></table>
+        </div>
+        <div class="panel">
+          <h2>Sexe</h2>
+          <div id="sexBox"></div>
+        </div>
+        <div class="panel">
+          <h2>🏆 Top 10 OneFOO</h2>
+          <ol class="adm-top10" id="top10"></ol>
+        </div>
+        <div class="panel">
+          <h2>Meilleurs par jeu</h2>
+          <div id="topByGame"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-players" class="adm-view hidden">
+      <div class="panel adm-filters">
+        <input id="plSearch" type="search" placeholder="Rechercher : pseudo, numéro, pays…" autocomplete="off">
+        <select id="plCountry" class="select"></select>
+        <select id="plSort" class="select">
+          <option value="points">Trier : points</option>
+          <option value="games">Trier : parties</option>
+          <option value="createdAt">Trier : inscription récente</option>
+          <option value="lastSeen">Trier : dernière visite</option>
+          <option value="name">Trier : pseudo</option>
+        </select>
+        <button class="btn primary" id="exportBtn">⬇ Export CSV</button>
+      </div>
+      <p class="adm-count" id="plCount"></p>
+      <div class="tbl-wrap">
+        <table class="tbl players" id="plTbl"></table>
+      </div>
+    </section>
+  </main>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <script src="/js/core/countries.js"></script>
+  <script src="/js/admin.js"></script>
+</body>
+</html>

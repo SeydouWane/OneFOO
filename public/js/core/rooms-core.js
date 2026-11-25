@@ -47,6 +47,7 @@
       avatar: AVATARS.includes(p.avatar) ? p.avatar : pick(AVATARS),
       isBot: false,
       lastSeen: now,
+      uid: p.uid || null, // compte OneFOO (classements) — jamais envoyé aux autres joueurs
     };
   }
 
@@ -122,6 +123,7 @@
     const existing = player(room, p.id);
     if (existing && !existing.isBot) {
       existing.lastSeen = now;
+      if (p.uid) existing.uid = p.uid;
       return;
     }
     if (status(room) === 'playing') throw new GameError('Une partie est déjà en cours dans ce salon. Réessayez à la fin de la manche.');
