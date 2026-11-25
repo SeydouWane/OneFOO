@@ -342,7 +342,7 @@
     } finally {
       net.inflight = false;
     }
-    if (code === net.code) schedulePoll(document.hidden ? 5000 : POLL_MS);
+    if (code === net.code) schedulePoll(document.hidden ? 5000 : voice.negotiating() ? 400 : POLL_MS);
   }
   document.addEventListener('visibilitychange', () => !document.hidden && net.code && schedulePoll(0));
 
@@ -394,6 +394,16 @@
     meterTimer: null,
     wants() {
       return this.micOn || this.active;
+    },
+    /** Mise en relation en cours : on rafraîchit plus vite (pendant 20 s au plus). */
+    negotiating() {
+      const pending = this.active && (!this.peers.size || [...this.peers.values()].some((p) => p.pc.connectionState !== 'connected'));
+      if (!pending) {
+        this.pendingSince = 0;
+        return false;
+      }
+      if (!this.pendingSince) this.pendingSince = Date.now();
+      return Date.now() - this.pendingSince < 20000;
     },
     track() {
       return this.stream ? this.stream.getAudioTracks()[0] || null : null;
