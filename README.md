@@ -16,6 +16,11 @@ Deuxième jeu : **Morpion** (2 joueurs, ✕ contre ◯). Contre le système, la 
 commet de moins en moins d'erreurs, repère les doubles menaces aux niveaux élevés et commence la partie aux niveaux 7-8 et 12+.
 Entre amis, l'hôte choisit la grille et on alterne qui commence à chaque revanche. Un match nul ne change pas le niveau.
 
+Autres jeux à 2 : **Aligne 4** (grille 7×6, les jetons tombent, aligner 4 ; « Puissance 4 » étant une marque déposée,
+le jeu porte un autre nom), **Awalé** (règle abapa : semis, prises à 2-3 graines, interdit d'affamer, 25 graines pour gagner)
+et **Dames** internationales 10×10 (prise obligatoire et majoritaire, dames volantes, promotion en fin de coup).
+Contre le système, l'IA calcule de plus en plus de coups à l'avance à chaque niveau, et commence aux niveaux élevés.
+
 ## Fonctionnalités
 
 - **Contre le système** : à chaque victoire, le système monte d'un niveau (Débutant → Apprenti → Joueur → Confirmé → Expert → Maître → Légende).
@@ -42,8 +47,11 @@ public/js/core/rooms-core.js  socle commun des salons (joueurs, présence, bots,
 public/js/foo/engine.js    FOO! : règles                                                       } navigateur
 public/js/foo/bot.js       FOO! : IA du système et niveaux                                     } + serveur
 public/js/foo/rooms.js     FOO! : salons                                                       }
+public/js/core/duel-rooms.js  modèle commun des jeux à 2 + recherche alpha-bêta pour les IA   }
 public/js/morpion/engine.js  Morpion : règles et IA (minimax en 3×3, heuristique sinon)        }
 public/js/morpion/rooms.js   Morpion : salons                                                  }
+public/js/aligne4|awale|dames/engine.js, rooms.js  autres jeux à 2 (règles + IA, salons)      }
+public/js/<jeu>/ui.js      affichage de chaque jeu à 2 (plateau, textes, règles), côté navigateur
 api/room.js                fonction Vercel /api/room (mode entre amis)
 src/api.js                 API : créer / rejoindre / jouer / rafraîchir
 src/games.js               registre des jeux (type de salon -> logique du jeu)
@@ -110,8 +118,9 @@ de parties par mois.
 
 ## Ajouter un jeu
 
-1. Créez `public/js/<jeu>/engine.js` (règles + IA) et `public/js/<jeu>/rooms.js` sur le modèle de `morpion/` :
-   le socle `core/rooms-core.js` gère déjà joueurs, salon, présence, bots, réactions, micro et répliques.
-2. Ajoutez-le au registre `src/games.js` et aux scripts de `public/index.html`.
-3. Côté client (`public/js/app.js`) : ajoutez-le à `ROOMS` / `GAME_NAMES`, son affichage dans `renderGame`
-   et son écran de fin, puis activez sa tuile sur l'accueil.
+Pour un jeu à 2 joueurs au tour par tour :
+1. `public/js/<jeu>/engine.js` : la classe de partie (`play`, `legalMoves`, `viewFor`…) et l'IA (`profile`, `chooseMove`,
+   en s'appuyant sur `DuelRooms.searchBest` pour l'alpha-bêta).
+2. `public/js/<jeu>/rooms.js` : quelques lignes avec `DuelRooms.create({...})` et les répliques du système.
+3. `public/js/<jeu>/ui.js` : l'affichage du plateau, les textes et les règles (`window.OneFOOGames[<jeu>]`).
+4. Ajoutez-le à `src/games.js`, aux scripts de `public/index.html`, à `ROOMS` dans `public/js/app.js`, et sa tuile sur l'accueil.

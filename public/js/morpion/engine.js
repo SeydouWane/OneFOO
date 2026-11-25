@@ -122,6 +122,11 @@
     checkEnd() {
       return this.status !== 'playing';
     }
+    legalMoves() {
+      const out = [];
+      for (let i = 0; i < this.board.length; i++) if (this.board[i] === null) out.push(i);
+      return out;
+    }
 
     play(playerId, cell) {
       if (this.status !== 'playing') throw new GameError('La partie est terminée.');

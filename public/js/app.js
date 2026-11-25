@@ -3,15 +3,18 @@
   'use strict';
   const Core = window.RoomsCore;
   const Bot = window.FooBot;
-  const MEngine = window.MorpionEngine;
   // Logique des salons de chaque jeu (partagée avec le serveur)
-  const ROOMS = { foo: window.FooRooms, morpion: window.MorpionRooms };
-  const GAME_NAMES = { foo: 'FOO!', morpion: 'Morpion' };
-  const MARK = { X: '✕', O: '◯' };
-  const MARK_SVG = {
-    X: '<svg viewBox="0 0 100 100" aria-hidden="true"><path pathLength="100" d="M24 24 L76 76 M76 24 L24 76"/></svg>',
-    O: '<svg viewBox="0 0 100 100" aria-hidden="true"><circle pathLength="100" cx="50" cy="50" r="28"/></svg>',
+  const ROOMS = {
+    foo: window.FooRooms,
+    morpion: window.MorpionRooms,
+    aligne4: window.Aligne4Rooms,
+    awale: window.AwaleRooms,
+    dames: window.DamesRooms,
   };
+  // Modules d'affichage des jeux à 2 (public/js/<jeu>/ui.js)
+  const GAME_UI = window.OneFOOGames || {};
+  const GAME_NAMES = { foo: 'FOO!' };
+  for (const k of Object.keys(GAME_UI)) GAME_NAMES[k] = GAME_UI[k].name;
 
   // ================================================================ utilitaires
   const $ = (s, el = document) => el.querySelector(s);
@@ -103,7 +106,6 @@
   const state = {
     screen: 'home',
     kind: 'foo', // jeu choisi dans le hub
-    mBoardKey: null,
     room: null,
     pendingJoin: null,
     leftCodes: new Set(),
@@ -919,6 +921,9 @@
 
   $('#tileFoo').addEventListener('click', () => openGame('foo'));
   $('#tileMorpion').addEventListener('click', () => openGame('morpion'));
+  $('#tileAligne4').addEventListener('click', () => openGame('aligne4'));
+  $('#tileAwale').addEventListener('click', () => openGame('awale'));
+  $('#tileDames').addEventListener('click', () => openGame('dames'));
 
   // Lien d'invitation : /r/CODE ou ?code=CODE
   (function parseInvite() {
@@ -948,10 +953,7 @@
   // ================================================================ hub du jeu choisi
   /** Description du prochain défi contre le système pour ce jeu et ce niveau. */
   function challengeText(kind, lv) {
-    if (kind === 'morpion') {
-      const p = MEngine.profile(lv);
-      return `grille ${p.size}×${p.size}, aligner ${p.align}${p.botStarts ? ', le système commence' : ''}`;
-    }
+    if (GAME_UI[kind]) return GAME_UI[kind].challenge(lv);
     const n = opponentsFor(lv);
     return `${n} adversaire${n > 1 ? 's' : ''} IA`;
   }
@@ -971,7 +973,7 @@
       ...TIERS.map(([min, name]) => h('span', { class: name === cur ? 'now' : min < lv ? 'done' : '', text: `${name} · ${min}` }))
     );
     $('#stWins').textContent = stats.wins;
-    $('#stLosses').textContent = stats.losses + (kind === 'morpion' && stats.draws ? ` (+${stats.draws} nuls)` : '');
+    $('#stLosses').textContent = stats.losses + (stats.draws ? ` (+${stats.draws} nuls)` : '');
     $('#stBest').textContent = stats.best;
   }
 
@@ -981,7 +983,14 @@
     renderHub();
     show('hub');
   }
-  const openRules = (kind) => openModal(kind === 'morpion' ? 'rulesMorpionModal' : 'rulesModal');
+  function openRules(kind) {
+    const ui = GAME_UI[kind];
+    if (!ui) return openModal('rulesModal');
+    $('#rulesGameTitle').textContent = `Règles : ${ui.name}`;
+    // les règles sont des textes fixes écrits dans les modules des jeux
+    $('#rulesGameList').innerHTML = ui.rules.map((r) => `<li>${r}</li>`).join('');
+    openModal('rulesGameModal');
+  }
   $('#hubRulesBtn').addEventListener('click', () => openRules(state.kind));
   $('#lobbyRulesBtn').addEventListener('click', () => openRules((state.room && state.room.kind) || state.kind));
 
@@ -1064,10 +1073,8 @@
   }
   const inviteLink = (code) => `${shareOrigin}/r/${code}`;
   const inviteText = (code) => {
-    const kind = (state.room && state.room.kind) || 'foo';
-    return kind === 'morpion'
-      ? `Viens jouer au Morpion avec moi sur OneFOO ✕◯ Code : ${code}`
-      : `Viens jouer à FOO! avec moi sur OneFOO 🎴 Code : ${code}`;
+    const ui = GAME_UI[(state.room && state.room.kind) || 'foo'];
+    return `${ui ? ui.invite : 'Viens jouer à FOO! avec moi sur OneFOO 🎴'} Code : ${code}`;
   };
 
   async function copyText(text) {
@@ -1125,19 +1132,31 @@
     $('#addBotBtn').disabled = room.players.length >= room.maxPlayers;
 
     // Spécificités du jeu
-    const morpion = room.kind === 'morpion';
+    const ui = GAME_UI[room.kind];
     $('#lobbyTitle').textContent = `Salon · ${GAME_NAMES[room.kind] || 'FOO!'}`;
-    $('#lobbyHint').textContent = `Envoyez le code ou le lien à vos amis : ils rejoignent en un clic, sans inscription. ${morpion ? '2 joueurs (ou un ami + un bot).' : '2 à 6 joueurs.'}`;
-    $('#mOptions').classList.toggle('hidden', !morpion);
-    if (morpion) {
-      const size = (room.options && room.options.size) || 3;
-      $$('#mSizeSeg button').forEach((b) => {
-        b.classList.toggle('sel', Number(b.dataset.size) === size);
-        b.disabled = !isHost;
-      });
+    $('#lobbyHint').textContent = `Envoyez le code ou le lien à vos amis : ils rejoignent en un clic, sans inscription. ${ui ? '2 joueurs (ou un ami + un bot).' : '2 à 6 joueurs.'}`;
+    // Options de partie choisies par l'hôte (ex. taille de la grille du morpion)
+    const opt = ui && ui.options;
+    $('#gameOptions').classList.toggle('hidden', !opt);
+    if (opt) {
+      $('#gameOptionsLabel').textContent = opt.label;
+      const current = room.options && room.options[opt.key];
+      $('#optSeg').replaceChildren(
+        ...opt.choices.map((ch) =>
+          h(
+            'button',
+            {
+              class: ch.value === current ? 'sel' : '',
+              disabled: !isHost,
+              onclick: () => send('options', { [opt.key]: ch.value }),
+            },
+            ch.label,
+            ch.sub ? h('small', { text: ch.sub }) : null
+          )
+        )
+      );
     }
   }
-  $$('#mSizeSeg button').forEach((b) => b.addEventListener('click', () => send('options', { size: Number(b.dataset.size) })));
 
   $('#shareBtn').addEventListener('click', async () => {
     const code = state.room && state.room.code;
@@ -1233,7 +1252,6 @@
     state.lastTopId = null;
     state.actionText = '';
     state.lastTurnSeq = null;
-    state.mBoardKey = null;
     if (state.resultShownFor !== g.id) closeModal('resultModal');
     closeModal('colorModal');
   }
@@ -1243,7 +1261,7 @@
     if (!g) return;
     $('.game').dataset.kind = room.kind || 'foo';
     resetForNewGame(g);
-    if (room.kind === 'morpion') return renderMorpion(room, g);
+    if (GAME_UI[room.kind]) return renderDuel(room, g, GAME_UI[room.kind]);
     renderFoo(room, g);
   }
 
@@ -1277,133 +1295,97 @@
     if (g.status === 'ended') showResult(room, g);
   }
 
-  // ================================================================ MORPION
-  function renderMorpion(room, g) {
+  // ================================================================ JEUX À 2 (Morpion, Aligne 4, Awalé, Dames)
+  // Chaque jeu fournit un module d'affichage (public/js/<jeu>/ui.js) ; le reste est commun.
+  const duelCtx = {
+    h,
+    $,
+    $$,
+    sfx,
+    vibrate,
+    shake,
+    toast,
+    me: () => playerId,
+    nameOf,
+    play: (move) => playDuelMove(move),
+    notYourTurn: () => shake($('#statusMain')),
+  };
+
+  function playDuelMove(move) {
+    const room = state.room;
+    const g = room && room.game;
+    const ui = room && GAME_UI[room.kind];
+    if (!g || !ui || g.status !== 'playing') return;
+    if (g.turnPlayerId !== playerId) return shake($('#statusMain'));
+    if (ui.canPlay && !ui.canPlay(g, move)) {
+      if (ui.invalidText) toast(ui.invalidText(g, move));
+      return;
+    }
+    guarded(async () => {
+      const res = await send('move', { move });
+      if (res && res.ok) sfx('play');
+    });
+  }
+
+  function renderDuel(room, g, ui) {
     const myTurn = g.status === 'playing' && g.turnPlayerId === playerId;
     const mine = g.players.find((p) => p.id === playerId);
     $('#gameInfo').replaceChildren(
       ...(room.mode === 'solo'
-        ? [h('b', { text: `Le système · niveau ${room.level}` }), h('br'), `${room.levelTitle} · ${g.size}×${g.size}`]
-        : [h('b', { text: `Salon ${room.code}` }), h('br'), `Morpion ${g.size}×${g.size} · aligner ${g.align}`])
+        ? [h('b', { text: `${ui.name} · niveau ${room.level}` }), h('br'), `${room.levelTitle} · ${ui.short(g)}`]
+        : [h('b', { text: `Salon ${room.code}` }), h('br'), `${ui.name} · ${ui.short(g)}`])
     );
-    processMorpionEvents(g);
-    // Avatars : on réutilise les pastilles des adversaires, avec leur symbole à la place du nombre de cartes
+    processDuelEvents(g, ui);
+    // Avatars : on réutilise les pastilles des adversaires (symbole, graines ou pièces à la place des cartes)
     renderOpponents(room, {
       status: g.status,
       turnPlayerId: g.turnPlayerId,
-      players: g.players.map((p) => ({ ...p, cardCount: MARK[p.mark], saidFoo: false, rank: null })),
+      players: g.players.map((p) => ({ ...p, cardCount: ui.badge(p, g), mark: ui.chipMark ? ui.chipMark(p) : p.mark, saidFoo: false, rank: null })),
     });
-    renderMorpionBoard(g, myTurn);
+    ui.render(duelCtx, $('#duelBoard'), room, g, myTurn);
 
     const main = $('#statusMain');
-    const markSpan = (m) => h('span', { class: 'mk-' + m, text: MARK[m] });
     if (g.status === 'ended') {
       main.replaceChildren(g.isDraw ? 'Match nul !' : g.winnerId === playerId ? 'Vous avez gagné ! 🎉' : `${nameOf(g, g.winnerId)} a gagné`);
-    } else if (myTurn) {
-      main.replaceChildren('À vous de jouer ', markSpan(mine.mark), ` · alignez ${g.align}`);
+    } else if (myTurn && mine) {
+      main.replaceChildren('À vous de jouer', ...[].concat(ui.youAre(duelCtx, g, mine)));
     } else {
-      const cur = g.players.find((p) => p.id === g.turnPlayerId);
-      main.replaceChildren(`${nameOf(g, g.turnPlayerId)} réfléchit… `, markSpan(cur.mark));
+      main.replaceChildren(`${nameOf(g, g.turnPlayerId)} réfléchit…`);
     }
     main.classList.toggle('mine', myTurn);
     $('#statusSub').textContent = state.actionText;
 
     myTurnFeedback(g, myTurn);
-    if (g.status === 'ended') showMorpionResult(room, g);
+    if (g.status === 'ended') showDuelResult(room, g, ui);
   }
 
-  function renderMorpionBoard(g, myTurn) {
-    const board = $('#mBoard');
-    const n = g.size;
-    // (Re)construit la grille au changement de partie ou de taille
-    const key = `${g.id}:${n}`;
-    if (state.mBoardKey !== key) {
-      state.mBoardKey = key;
-      board.style.setProperty('--n', n);
-      board.className = `m-board n${n}`;
-      board.replaceChildren(
-        ...g.board.map((_, i) =>
-          h('button', {
-            class: 'm-cell',
-            role: 'gridcell',
-            'aria-label': `Case ${Math.floor(i / n) + 1}-${(i % n) + 1}`,
-            dataset: null,
-            onclick: () => onMorpionCell(i),
-          })
-        )
-      );
-    }
-    board.classList.toggle('mine', myTurn);
-    board.classList.toggle('ended', g.status === 'ended');
-    const win = new Set(g.winLine || []);
-    [...board.children].forEach((cell, i) => {
-      const mark = g.board[i];
-      const had = cell.dataset.mark || '';
-      if ((mark || '') !== had) {
-        cell.dataset.mark = mark || '';
-        cell.innerHTML = mark ? MARK_SVG[mark] : '';
-        cell.classList.toggle('fresh', !!mark);
-      } else cell.classList.remove('fresh');
-      cell.classList.toggle('X', mark === 'X');
-      cell.classList.toggle('O', mark === 'O');
-      cell.classList.toggle('free', !mark && g.status === 'playing');
-      cell.classList.toggle('last', g.lastMove === i);
-      cell.classList.toggle('win', win.has(i));
-      cell.setAttribute('aria-label', `Case ${Math.floor(i / n) + 1}-${(i % n) + 1}${mark ? ' : ' + (mark === 'X' ? 'croix' : 'rond') : ''}`);
-    });
-  }
-
-  function onMorpionCell(i) {
-    const g = state.room && state.room.game;
-    if (!g || state.room.kind !== 'morpion' || g.status !== 'playing') return;
-    if (g.turnPlayerId !== playerId) {
-      shake($('#statusMain'));
-      return;
-    }
-    if (g.board[i]) return;
-    guarded(async () => {
-      const res = await send('move', { cell: i });
-      if (res && res.ok) sfx('play');
-    });
-  }
-
-  function processMorpionEvents(g) {
+  function processDuelEvents(g, ui) {
     const fresh = g.events.filter((e) => e.seq > state.lastEventSeq);
     if (!fresh.length) return;
     state.lastEventSeq = fresh[fresh.length - 1].seq;
     for (const e of fresh) {
       const isMe = e.playerId === playerId;
-      const who = nameOf(g, e.playerId);
-      switch (e.type) {
-        case 'start':
-          state.actionText = isMe ? 'Vous commencez la partie' : `${who} commence la partie`;
-          break;
-        case 'move':
-          if (!isMe) sfx('play');
-          state.actionText = `${who} ${isMe ? 'jouez' : 'joue'} ${MARK[e.mark]}`;
-          break;
-        case 'block':
-          state.actionText = isMe ? 'Bien vu, vous bloquez !' : `${who} vous bloque !`;
-          break;
-        case 'threat':
-          if (e.target === playerId) {
-            state.actionText = `⚠️ ${who} menace d'aligner !`;
-            vibrate(30);
-          } else if (isMe) state.actionText = e.count > 1 ? 'Double menace ! 😈' : 'Vous menacez d’aligner !';
-          break;
+      if (e.type === 'start') {
+        state.actionText = isMe ? 'Vous commencez la partie' : `${nameOf(g, e.playerId)} commence la partie`;
+        continue;
       }
+      if ((e.type === 'move' || e.type === 'sow') && !isMe) sfx('play');
+      const text = ui.eventText(duelCtx, g, e);
+      if (text) state.actionText = text;
     }
   }
 
-  function showMorpionResult(room, g) {
+  function showDuelResult(room, g, ui) {
     const iWon = g.winnerId === playerId;
     const draw = g.isDraw;
+    const kind = room.kind;
     if (state.resultShownFor !== g.id) {
       state.resultShownFor = g.id;
       const winner = g.players.find((p) => p.id === g.winnerId);
+      const endNote = ui.endText ? ui.endText(g) : '';
       let before = null;
       if (room.mode === 'solo') {
-        const stats = statsFor('morpion');
+        const stats = statsFor(kind);
         if (!stats.counted.includes(g.id)) {
           stats.counted = [...stats.counted.slice(-30), g.id];
           if (iWon) {
@@ -1413,16 +1395,12 @@
             stats.best = Math.max(stats.best, stats.level);
           } else if (draw) stats.draws = (stats.draws || 0) + 1;
           else stats.losses++;
-          saveStats('morpion');
+          saveStats(kind);
         }
         const lv = stats.level;
         $('#levelUp').classList.toggle('hidden', before === null);
         if (iWon) {
-          const next = MEngine.profile(lv);
-          const prev = before !== null ? MEngine.profile(before) : next;
-          let extra = ' Il sera plus malin…';
-          if (next.size !== prev.size) extra = ` Nouvelle grille : ${next.size}×${next.size}, il faut aligner ${next.align} !`;
-          else if (next.botStarts && !prev.botStarts) extra = ' Désormais, c’est lui qui commence !';
+          const extra = before !== null && ui.levelUpExtra ? ui.levelUpExtra(before, lv) : ' Il sera plus malin…';
           $('#resultIcon').textContent = '🏆';
           $('#resultTitle').textContent = 'Victoire !';
           $('#resultText').textContent = before !== null ? `Le système monte au niveau ${lv} · ${levelTitle(lv)}.${extra}` : `Le système est au niveau ${lv}.`;
@@ -1433,17 +1411,17 @@
         } else if (draw) {
           $('#resultIcon').textContent = '🤝';
           $('#resultTitle').textContent = 'Match nul';
-          $('#resultText').textContent = `Personne n'a aligné. Le système reste au niveau ${lv} : gagnez pour le faire monter !`;
+          $('#resultText').textContent = `${endNote} Le système reste au niveau ${lv} : gagnez pour le faire monter !`.trim();
         } else {
           $('#resultIcon').textContent = '🤖';
           $('#resultTitle').textContent = 'Le système a gagné';
-          $('#resultText').textContent = `${winner ? winner.name : 'Le système'} a aligné ${g.align}. Le système reste au niveau ${lv}. Retentez votre chance !`;
+          $('#resultText').textContent = `${endNote} ${winner ? winner.name : 'Le système'} l'emporte. Le système reste au niveau ${lv}. Retentez votre chance !`.trim();
         }
       } else {
         $('#levelUp').classList.add('hidden');
-        $('#resultIcon').textContent = draw ? '🤝' : iWon ? '🏆' : '✕◯';
+        $('#resultIcon').textContent = draw ? '🤝' : iWon ? '🏆' : '🎲';
         $('#resultTitle').textContent = draw ? 'Match nul' : iWon ? 'Vous gagnez la manche !' : `${winner ? winner.name : '?'} gagne la manche`;
-        $('#resultText').textContent = draw ? 'Grille pleine, personne n’a aligné. Revanche ?' : iWon ? 'Bravo ! Prêt pour la revanche ?' : 'La revanche vous attend !';
+        $('#resultText').textContent = `${endNote} ${draw ? 'Revanche ?' : iWon ? 'Bravo ! Prêt pour la revanche ?' : 'La revanche vous attend !'}`.trim();
       }
       $('#ranking').replaceChildren(
         ...g.players.map((p) => {
@@ -1453,7 +1431,7 @@
           return h(
             'li',
             { class: p.id === g.winnerId ? 'win' : '' },
-            h('span', { class: 'r-medal mk-' + p.mark, text: MARK[p.mark] }),
+            h('span', { class: 'r-medal ' + ui.markClass(p), text: ui.badge(p, g) }),
             h('span', { text: p.avatar }),
             h('span', { class: 'r-name', text: p.id === playerId ? `${p.name} (vous)` : p.name }),
             h('span', { class: 'r-info', text: info + wins })

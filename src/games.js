@@ -3,6 +3,9 @@
 const GAMES = {
   foo: require('../public/js/foo/rooms.js'),
   morpion: require('../public/js/morpion/rooms.js'),
+  aligne4: require('../public/js/aligne4/rooms.js'),
+  awale: require('../public/js/awale/rooms.js'),
+  dames: require('../public/js/dames/rooms.js'),
 };
 
 /** Logique du jeu d'un salon (les anciens salons sans type sont des parties de FOO!). */
