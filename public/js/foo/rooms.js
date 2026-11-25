@@ -75,6 +75,17 @@
       "D'accord, bien joué. Mais je monte de niveau et je reviens !",
       'Revanche ! Je demande la revanche !',
     ],
+    botFinish: [
+      "J'ai fini ! Bon courage pour la suite, hahaha !",
+      'Terminé ! Je vous regarde vous battre pour la 2e place.',
+      'Et voilà, plus de cartes ! Quelqu’un veut des conseils ?',
+    ],
+    humanLast: [
+      'Dernière place ! Même mon fils fait mieux, hahaha ! On rejoue ?',
+      "Le dernier paie le déjeuner, c'est la règle ! Hahaha !",
+      'Dernier ! Allez, ne pleure pas, on rejoue ?',
+    ],
+    botLast: ['Bon… dernier. Je vous ai laissé gagner, c’est tout.', 'Pfff, ces cartes sont truquées !'],
   };
   const SAY_GAP_MS = 3500; // délai minimum entre deux répliques (sauf moments forts)
   const IDLE_TEASE_MS = 15000; // un humain qui traîne se fait chambrer
@@ -211,6 +222,7 @@
       gp.isBot = true;
       gp.avatar = '🤖';
       notice(room, `${p.name} a quitté la partie (remplacé par un bot)`);
+      g.checkEnd(); // plus aucun humain en jeu : la manche se termine
     } else {
       room.players.splice(idx, 1);
       notice(room, `${p.name} a quitté le salon`);
@@ -415,8 +427,19 @@
             if (isSpeaker(e.by) && isHuman(e.playerId)) add('botCatch', e.by, e.playerId, 3, 1);
             else if (isHuman(e.by) && isSpeaker(e.playerId)) add('humanCatch', e.playerId, e.by, 3, 0.9);
             break;
+          case 'finish':
+            // Le premier a fini mais la partie continue pour les autres places
+            if (e.rank === 1 && g.status === 'playing') {
+              if (isSpeaker(e.playerId)) add('botFinish', e.playerId, firstHuman, 3, 1);
+              else if (isHuman(e.playerId)) add('humanWin', anyBot(), e.playerId, 3, 1);
+            }
+            break;
           case 'win':
-            if (isSpeaker(e.playerId)) add('botWin', e.playerId, firstHuman, 4, 1);
+            if (e.continued) {
+              // fin d'une partie jouée jusqu'au bout : on chambre le dernier
+              if (isHuman(e.loserId)) add('humanLast', anyBot(), e.loserId, 4, 1);
+              else if (isSpeaker(e.loserId)) add('botLast', e.loserId, null, 4, 0.9);
+            } else if (isSpeaker(e.playerId)) add('botWin', e.playerId, firstHuman, 4, 1);
             else if (isHuman(e.playerId)) add('humanWin', anyBot(), e.playerId, 4, 1);
             break;
         }

@@ -109,6 +109,8 @@
   };
   const oppEls = new Map();
   const isNum = (c) => /^\d$/.test(c.value);
+  const placeLabel = (r) => (r === 1 ? '1re' : `${r}e`);
+  const medal = (r) => ['🥇', '🥈', '🥉'][r - 1] || `${r}e`;
 
   // ================================================================ son & vibrations
   let actx = null;
@@ -1182,16 +1184,18 @@
       const offline = !!rp && !rp.isBot && !rp.connected;
       const active = g.turnPlayerId === p.id;
       $('.opp-emoji', el).textContent = p.avatar;
-      $('.opp-count', el).textContent = p.cardCount;
+      $('.opp-count', el).textContent = p.rank ? medal(p.rank) : p.cardCount;
       $('.opp-name', el).textContent = p.name;
       let sub = active ? 'joue…' : offline ? 'hors ligne' : p.isBot ? 'IA' : '';
       if (!active && room.mode === 'friends' && rp && rp.wins) sub = `🏆 ${rp.wins}`;
+      if (p.rank) sub = `${placeLabel(p.rank)} place`;
       $('.opp-sub', el).textContent = sub;
+      el.classList.toggle('done', !!p.rank && g.status === 'playing');
       el.classList.toggle('active', active);
       el.classList.toggle('danger', p.cardCount === 1 && g.status === 'playing');
       el.classList.toggle('offline', offline);
       const foo = $('.opp-foo', el);
-      if (p.saidFoo && p.cardCount <= 2) {
+      if (p.saidFoo && p.cardCount > 0 && p.cardCount <= 2) {
         if (!foo) el.append(h('span', { class: 'opp-foo', text: 'FOO!' }));
       } else if (foo) foo.remove();
       const mic = $('.opp-mic', el);
@@ -1278,6 +1282,10 @@
       el.addEventListener('click', () => onCardTap(c, el));
       return el;
     });
+    const mine = g.players.find((p) => p.id === playerId);
+    if (!els.length && mine && mine.rank && g.status === 'playing') {
+      els.push(h('div', { class: 'hand-done', text: `${medal(mine.rank)} Vous avez fini à la ${placeLabel(mine.rank)} place ! Regardez la fin de la partie…` }));
+    }
     hand.replaceChildren(...els);
     state.prevHandIds = new Set(g.hand.map((c) => c.id));
     layoutHand();
@@ -1386,8 +1394,10 @@
 
   function renderStatus(g, myTurn) {
     const main = $('#statusMain');
+    const mine = g.players.find((p) => p.id === playerId);
     let text;
     if (g.status === 'ended') text = g.winnerId === playerId ? 'Vous avez gagné ! 🎉' : `${nameOf(g, g.winnerId)} a gagné`;
+    else if (mine && mine.rank) text = `🏁 ${placeLabel(mine.rank)} place ! La partie continue : ${nameOf(g, g.turnPlayerId)} joue…`;
     else if (myTurn) text = g.hasDrawn ? 'Posez la carte piochée ou passez' : g.playable.length ? 'À vous de jouer !' : 'Aucune carte jouable : piochez';
     else text = `${nameOf(g, g.turnPlayerId)} réfléchit…`;
     main.textContent = text;
@@ -1456,6 +1466,16 @@
           break;
         case 'reverse':
           toast('⇄ Changement de sens !');
+          break;
+        case 'finish':
+          if (isMe) {
+            toast(`🏁 Bravo, vous terminez à la ${placeLabel(e.rank)} place !`, 'good');
+            sfx('win');
+          } else {
+            toast(`🏁 ${who} termine à la ${placeLabel(e.rank)} place`);
+            hit(e.playerId);
+          }
+          state.actionText = isMe ? `Vous terminez ${medal(e.rank)}` : `${who} termine ${medal(e.rank)}`;
           break;
         case 'foo':
           burst(isMe ? 'Vous !' : who);
@@ -1597,6 +1617,11 @@
     if (state.resultShownFor !== g.id) {
       state.resultShownFor = g.id;
       const winner = g.players.find((p) => p.id === g.winnerId);
+      // classement final : ordre d'arrivée, puis les autres selon leurs cartes restantes
+      const order = g.ranking || [g.winnerId, ...g.players.filter((p) => p.id !== g.winnerId).sort((a, b) => a.cardCount - b.cardCount).map((p) => p.id)];
+      const ranked = order.map((id) => g.players.find((p) => p.id === id)).filter(Boolean);
+      const total = ranked.length;
+      const myPlace = ranked.findIndex((p) => p.id === playerId) + 1;
       let before = null;
       if (room.mode === 'solo' && !stats.counted.includes(g.id)) {
         stats.counted = [...stats.counted.slice(-30), g.id];
@@ -1623,26 +1648,32 @@
             $('#lvNew').textContent = stats.level;
           }
         } else {
-          $('#resultIcon').textContent = '🤖';
-          $('#resultTitle').textContent = 'Le système a gagné';
-          $('#resultText').textContent = `${winner ? winner.name : 'Un bot'} a fini en premier. Le système reste au niveau ${stats.level}. Retentez votre chance !`;
+          const last = myPlace === total;
+          $('#resultIcon').textContent = last ? '🤖' : medal(myPlace);
+          $('#resultTitle').textContent = last ? 'Le système a gagné' : `${placeLabel(myPlace)} place`;
+          $('#resultText').textContent = `${winner ? winner.name : 'Un bot'} a fini en premier. Le système reste au niveau ${stats.level}. Gagnez pour le faire monter !`;
         }
       } else {
-        $('#resultIcon').textContent = iWon ? '🏆' : '🎴';
+        $('#resultIcon').textContent = iWon ? '🏆' : myPlace ? medal(myPlace) : '🎴';
         $('#resultTitle').textContent = iWon ? 'Vous gagnez la manche !' : `${winner ? winner.name : '?'} gagne la manche`;
-        $('#resultText').textContent = iWon ? 'Bravo ! Prêt pour la revanche ?' : 'La revanche vous attend !';
+        $('#resultText').textContent = iWon
+          ? 'Bravo ! Prêt pour la revanche ?'
+          : myPlace
+            ? `Vous finissez à la ${placeLabel(myPlace)} place sur ${total}. La revanche vous attend !`
+            : 'La revanche vous attend !';
       }
-      const ranked = [...g.players].sort((a, b) => (a.id === g.winnerId ? -1 : b.id === g.winnerId ? 1 : a.cardCount - b.cardCount));
       $('#ranking').replaceChildren(
-        ...ranked.map((p) => {
+        ...ranked.map((p, i) => {
           const rp = room.players.find((x) => x.id === p.id);
           const wins = room.mode === 'friends' && rp && rp.wins ? ` · 🏆 ${rp.wins}` : '';
+          const info = p.rank ? (p.rank === 1 ? 'Gagnant' : 'a fini') : `${p.cardCount} carte${p.cardCount > 1 ? 's' : ''}`;
           return h(
             'li',
             { class: p.id === g.winnerId ? 'win' : '' },
+            h('span', { class: 'r-medal', text: medal(i + 1) }),
             h('span', { text: p.avatar }),
             h('span', { class: 'r-name', text: p.id === playerId ? `${p.name} (vous)` : p.name }),
-            h('span', { class: 'r-info', text: (p.id === g.winnerId ? 'Gagnant' : `${p.cardCount} carte${p.cardCount > 1 ? 's' : ''}`) + wins })
+            h('span', { class: 'r-info', text: info + wins })
           );
         })
       );

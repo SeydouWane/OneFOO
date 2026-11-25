@@ -11,7 +11,9 @@
  *  - Plusieurs cartes du même chiffre (couleurs différentes) peuvent être posées ensemble :
  *    la première doit être jouable, la dernière posée donne la couleur.
  *  - Quand il ne reste qu'une carte, il faut annoncer "FOO!". Sinon un adversaire peut vous attraper : +2 cartes.
- *  - Le premier qui n'a plus de cartes gagne la manche.
+ *  - Le premier qui n'a plus de cartes gagne la manche ; les autres continuent pour les places suivantes
+ *    jusqu'à ce qu'il n'en reste qu'un (le dernier). S'il ne reste que des bots en jeu, la manche s'arrête
+ *    et ils sont classés selon leurs cartes restantes.
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -84,6 +86,9 @@
     constructor(players, opts = {}) {
       if (players.length < 2 || players.length > 10) throw new GameError('Il faut entre 2 et 10 joueurs.');
       this.rng = opts.rng || Math.random;
+      this.stopWhenOnlyBots = opts.stopWhenOnlyBots !== false;
+      this.finished = []; // ids des joueurs ayant posé toutes leurs cartes, dans l'ordre d'arrivée
+      this.ranking = null; // classement final (fin de manche)
       this.id = randomId(10);
       this.players = players.map((p) => ({
         id: p.id,
@@ -144,9 +149,22 @@
     top() {
       return this.discard[this.discard.length - 1];
     }
+    isDone(id) {
+      return this.finished.includes(id);
+    }
+    activePlayers() {
+      return this.players.filter((p) => !this.finished.includes(p.id));
+    }
+    /** Indice du joueur encore en jeu situé `steps` places plus loin (négatif = en arrière). */
     nextIndex(from = this.turn, steps = 1) {
       const n = this.players.length;
-      return (((from + this.direction * steps) % n) + n) % n;
+      const dir = steps < 0 ? -this.direction : this.direction;
+      let i = from;
+      for (let k = 0, guard = 0; k < Math.abs(steps) && guard < n * 4; guard++) {
+        i = (((i + dir) % n) + n) % n;
+        if (!this.finished.includes(this.players[i].id)) k++;
+      }
+      return i;
     }
     log(evt) {
       evt.seq = ++this.eventSeq;
@@ -236,19 +254,19 @@
       if (cards.length > 1) evt.cards = cards;
       this.log(evt);
 
-      if (p.hand.length === 0) {
-        this.status = 'ended';
-        this.winnerId = playerId;
-        this.vulnerable = null;
-        this.log({ type: 'win', playerId });
-        return { ok: true, won: true };
-      }
-      if (p.hand.length === 1 && !p.saidFoo) {
+      const done = p.hand.length === 0;
+      if (done) {
+        this.finished.push(playerId);
+        if (this.vulnerable === playerId) this.vulnerable = null;
+        this.log({ type: 'finish', playerId, rank: this.finished.length });
+        if (this.checkEnd()) return { ok: true, finished: true, ended: true };
+      } else if (p.hand.length === 1 && !p.saidFoo) {
         this.vulnerable = playerId;
         this.vulnerableSeq++;
       }
 
-      const n = this.players.length;
+      // Effet de la carte (même si le joueur vient de terminer : il s'applique au suivant encore en jeu)
+      const n = this.activePlayers().length;
       switch (card.value) {
         case 'skip': {
           const victim = this.players[this.nextIndex()];
@@ -257,7 +275,7 @@
           break;
         }
         case 'reverse': {
-          if (n === 2) {
+          if (n === 2 && !done) {
             const victim = this.players[this.nextIndex()];
             this.log({ type: 'skip', playerId: victim.id });
             this.startTurn(this.turn); // le même joueur rejoue
@@ -280,7 +298,30 @@
         default:
           this.startTurn(this.nextIndex());
       }
-      return { ok: true };
+      return { ok: true, finished: done };
+    }
+
+    /**
+     * Termine la manche s'il ne reste qu'un joueur en jeu (ou plus aucun humain en jeu).
+     * Les joueurs restants sont classés selon leurs cartes. @returns {boolean} true si terminée
+     */
+    checkEnd() {
+      if (this.status !== 'playing') return true;
+      const active = this.activePlayers();
+      const humansLeft = active.some((p) => !p.isBot);
+      if (active.length > 1 && (humansLeft || !this.stopWhenOnlyBots || !this.finished.length)) return false;
+      const rest = active.slice().sort((a, b) => a.hand.length - b.hand.length);
+      this.ranking = [...this.finished, ...rest.map((p) => p.id)];
+      this.status = 'ended';
+      this.winnerId = this.ranking[0];
+      this.vulnerable = null;
+      this.log({
+        type: 'win',
+        playerId: this.winnerId,
+        loserId: this.ranking[this.ranking.length - 1],
+        continued: this.finished.length > 1,
+      });
+      return true;
     }
 
     draw(playerId) {
@@ -314,7 +355,7 @@
      */
     canSayFoo(playerId) {
       const p = this.player(playerId);
-      if (!p || this.status !== 'playing') return false;
+      if (!p || this.status !== 'playing' || !p.hand.length) return false;
       if (p.hand.length <= 2) return true;
       if (this.current().id !== playerId || this.hasDrawn) return false;
       const top = this.top();
@@ -370,7 +411,9 @@
           isBot: p.isBot,
           cardCount: p.hand.length,
           saidFoo: p.saidFoo,
+          rank: this.finished.includes(p.id) ? this.finished.indexOf(p.id) + 1 : null,
         })),
+        ranking: this.ranking,
         hand: me ? me.hand : [],
         playable: me ? this.playableIds(viewerId) : [],
         canFoo: me ? !me.saidFoo && this.canSayFoo(viewerId) : false,

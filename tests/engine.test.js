@@ -163,6 +163,73 @@ function players(n) {
   assert.throws(() => g2.play('p1', ['d1', 'd2']), /même chiffre/);
 }
 
+// 5c) Quand un joueur termine, les autres continuent jusqu'à la fin (classement complet)
+const humansN = (n) => Array.from({ length: n }, (_, i) => ({ id: 'h' + i, name: 'H' + i, isBot: false }));
+{
+  const g = new FooGame(humansN(3));
+  g.turn = 0;
+  g.direction = 1;
+  g.currentColor = 'red';
+  g.discard.push({ id: 'tt', color: 'red', value: '4' });
+  g.players[0].hand = [{ id: 'last', color: 'red', value: 'draw2' }];
+  g.players[0].saidFoo = true;
+  const h1 = g.players[1].hand.length;
+  g.play('h0', 'last');
+  assert.strictEqual(g.status, 'playing', 'la partie continue après le 1er');
+  assert.deepStrictEqual(g.finished, ['h0']);
+  assert.strictEqual(g.players[1].hand.length, h1 + 2, "l'effet de la dernière carte s'applique");
+  assert.strictEqual(g.current().id, 'h2', 'le joueur suivant encore en jeu prend la main');
+  assert.strictEqual(g.viewFor('h1').players[0].rank, 1);
+  // le joueur qui a fini n'est plus jamais appelé à jouer
+  g.currentColor = 'blue';
+  g.discard.push({ id: 'tb', color: 'blue', value: '1' });
+  g.players[2].hand.push({ id: 'skp', color: 'blue', value: 'skip' });
+  g.play('h2', 'skp');
+  assert.strictEqual(g.current().id, 'h2', 'à 2 joueurs restants, Passe fait rejouer (le fini est ignoré)');
+  // le 2e termine -> il n'en reste qu'un : fin, classement complet
+  g.players[2].hand = [{ id: 'fin', color: 'blue', value: '7' }];
+  g.play('h2', 'fin');
+  assert.strictEqual(g.status, 'ended');
+  assert.deepStrictEqual(g.ranking, ['h0', 'h2', 'h1']);
+  assert.strictEqual(g.winnerId, 'h0');
+  const win = g.events[g.events.length - 1];
+  assert.ok(win.type === 'win' && win.loserId === 'h1' && win.continued);
+}
+{
+  // Plus aucun humain en jeu : on s'arrête et on classe les bots selon leurs cartes
+  const g = new FooGame([
+    { id: 'me', name: 'Moi', isBot: false },
+    { id: 'b1', name: 'B1', isBot: true },
+    { id: 'b2', name: 'B2', isBot: true },
+  ]);
+  g.turn = 0;
+  g.currentColor = 'green';
+  g.discard.push({ id: 'tg', color: 'green', value: '2' });
+  g.players[0].hand = [{ id: 'x', color: 'green', value: '5' }];
+  g.players[1].hand = g.players[1].hand.slice(0, 5);
+  g.players[2].hand = g.players[2].hand.slice(0, 3);
+  g.play('me', 'x');
+  assert.strictEqual(g.status, 'ended', 'que des bots restants : fin immédiate');
+  assert.deepStrictEqual(g.ranking, ['me', 'b2', 'b1']);
+  assert.ok(!g.events[g.events.length - 1].continued);
+}
+{
+  // Partie complète à 4 humains (jouée par l'IA) : tout le monde est classé
+  for (let k = 0; k < 200; k++) {
+    const g = new FooGame(humansN(4));
+    let turns = 0;
+    while (g.status === 'playing') {
+      bot.playTurn(g, g.current().id, bot.profile(5));
+      assert.ok(!g.isDone(g.status === 'playing' ? g.current().id : 'none'), 'un joueur fini ne joue plus');
+      assert.strictEqual(g.totalCards(), DECK_SIZE);
+      if (++turns > 6000) throw new Error('partie infinie (classement)');
+    }
+    assert.strictEqual(g.ranking.length, 4);
+    assert.strictEqual(new Set(g.ranking).size, 4);
+    assert.strictEqual(g.finished.length, 3, 'trois joueurs finissent, le dernier reste');
+  }
+}
+
 // 5b) Sauvegarde / restauration JSON (Redis, localStorage) en pleine partie
 {
   const g = new FooGame(players(3));
