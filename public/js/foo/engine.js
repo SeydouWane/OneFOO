@@ -17,9 +17,9 @@
  *    et ils sont classés selon leurs cartes restantes.
  */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.FooEngine = factory();
-})(typeof self !== 'undefined' ? self : this, function () {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('../core/rooms-core.js'));
+  else root.FooEngine = factory(root.RoomsCore);
+})(typeof self !== 'undefined' ? self : this, function (Core) {
   'use strict';
 
   const COLORS = ['red', 'yellow', 'green', 'blue'];
@@ -27,13 +27,7 @@
   const HAND_SIZE = 7;
   const DECK_SIZE = 108;
 
-  class GameError extends Error {
-    constructor(message) {
-      super(message);
-      this.name = 'GameError';
-      this.isGameError = true;
-    }
-  }
+  const { GameError } = Core; // une seule classe d'erreur pour toute la plateforme
 
   function randomId(len = 8) {
     const abc = 'abcdefghijklmnopqrstuvwxyz0123456789';

@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node local-server.js",
     "dev": "node --watch local-server.js",
-    "test": "node tests/engine.test.js && node tests/rooms.test.js && node tests/api.test.js"
+    "test": "node tests/engine.test.js && node tests/rooms.test.js && node tests/morpion.test.js && node tests/api.test.js"
   },
   "engines": {
     "node": ">=18"

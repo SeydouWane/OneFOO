@@ -9,7 +9,7 @@
  * Chaque salon est un hash Redis { v: version, d: JSON }. L'écriture est un "compare-and-set" atomique
  * (script Lua) : si deux joueurs agissent en même temps, l'un des deux recommence avec l'état à jour.
  */
-const Rooms = require('../public/js/foo/rooms.js');
+const { parseRoom } = require('./games');
 
 const PREFIX = 'onefoo:room:';
 const TTL_SECONDS = 2 * 60 * 60; // un salon inactif disparaît après 2 h
@@ -31,7 +31,7 @@ const sigKey = (code, to) => `${SIG_PREFIX}${code}:${to}`;
 
 const serialize = (room) => JSON.stringify(room);
 function deserialize(v, d) {
-  const room = Rooms.parse(d);
+  const room = parseRoom(d);
   room.version = Number(v);
   return room;
 }

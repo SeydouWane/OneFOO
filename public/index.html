@@ -73,7 +73,11 @@
               <div class="tile-cta">Jouer ➜</div>
             </div>
           </button>
-          <div class="game-tile soon"><span class="soon-ico">⭕</span><b>Morpion</b><small>Bientôt</small></div>
+          <button class="game-tile playable" id="tileMorpion">
+            <div class="m-art" aria-hidden="true"><i class="x"></i><i></i><i class="o"></i><i class="o"></i><i class="x"></i><i></i><i></i><i class="o"></i><i class="x"></i></div>
+            <b>Morpion</b>
+            <small class="new">Nouveau · 2 joueurs</small>
+          </button>
           <div class="game-tile soon"><span class="soon-ico">🔴</span><b>Puissance 4</b><small>Bientôt</small></div>
           <div class="game-tile soon"><span class="soon-ico">🪨</span><b>Awalé</b><small>Bientôt</small></div>
           <div class="game-tile soon"><span class="soon-ico">⚫</span><b>Dames</b><small>Bientôt</small></div>
@@ -87,8 +91,8 @@
       <div class="page">
         <header class="topbar">
           <button class="icon-btn" data-go="home" aria-label="Retour">←</button>
-          <h1>FOO!</h1>
-          <button class="icon-btn" data-open="rulesModal" aria-label="Règles">?</button>
+          <h1 id="hubTitle">FOO!</h1>
+          <button class="icon-btn" id="hubRulesBtn" aria-label="Règles">?</button>
         </header>
 
         <div class="system panel">
@@ -127,8 +131,8 @@
       <div class="page">
         <header class="topbar">
           <button class="icon-btn" id="lobbyLeave" aria-label="Quitter le salon">←</button>
-          <h1>Salon</h1>
-          <button class="icon-btn" data-open="rulesModal" aria-label="Règles">?</button>
+          <h1 id="lobbyTitle">Salon</h1>
+          <button class="icon-btn" id="lobbyRulesBtn" aria-label="Règles">?</button>
         </header>
 
         <div class="code-card panel">
@@ -142,6 +146,15 @@
           </div>
         </div>
 
+        <div class="m-options panel hidden" id="mOptions">
+          <div class="code-label">Grille de jeu</div>
+          <div class="seg" id="mSizeSeg">
+            <button data-size="3">3×3<small>aligner 3</small></button>
+            <button data-size="6">6×6<small>aligner 4</small></button>
+            <button data-size="9">9×9<small>aligner 5</small></button>
+          </div>
+        </div>
+
         <h2 class="section-title">Joueurs <span id="lobbyCount"></span></h2>
         <ul class="player-list" id="lobbyPlayers"></ul>
 
@@ -152,7 +165,7 @@
           <button class="btn primary big" id="startBtn">Lancer la partie</button>
         </div>
         <p class="waiting hidden" id="guestWaiting"><span class="dots"><i></i><i></i><i></i></span> En attente du lancement par l'hôte…</p>
-        <p class="hint">Envoyez le code ou le lien à vos amis : ils rejoignent en un clic, sans inscription. 2 à 6 joueurs.</p>
+        <p class="hint" id="lobbyHint">Envoyez le code ou le lien à vos amis : ils rejoignent en un clic, sans inscription. 2 à 6 joueurs.</p>
       </div>
     </section>
 
@@ -186,6 +199,7 @@
           <div class="pile discard" id="discard"></div>
           <div class="pending-badge hidden" id="pendingBadge" aria-live="polite"></div>
           <div class="color-pill" id="colorPill"></div>
+          <div class="m-board" id="mBoard" role="grid" aria-label="Grille de morpion"></div>
         </div>
 
         <div class="status" id="status">
@@ -279,13 +293,30 @@
     </div>
   </div>
 
+  <div class="modal" id="rulesMorpionModal" role="dialog" aria-modal="true" aria-labelledby="rulesMorpionTitle">
+    <div class="sheet rules">
+      <h3 id="rulesMorpionTitle">Règles du Morpion</h3>
+      <ul>
+        <li><b>But :</b> aligner vos symboles (en ligne, en colonne ou en diagonale) avant l'adversaire.</li>
+        <li>Chacun son tour, posez votre symbole dans une case libre. <b>✕</b> commence.</li>
+        <li>Grille pleine sans alignement : <b>match nul</b>.</li>
+        <li><b>Contre le système :</b> la grille grandit avec le niveau. Niveaux 1 à 4 : 3×3 (aligner 3). Niveaux 5 à 8 : 6×6 (aligner 4). À partir du niveau 9 : 9×9 (aligner 5). Chaque victoire fait monter le système ; aux niveaux élevés, c'est lui qui commence.</li>
+        <li><b>Entre amis :</b> l'hôte choisit la grille, 30 secondes par tour, et on alterne qui commence à chaque revanche.</li>
+      </ul>
+      <button class="btn primary" data-close>J'ai compris</button>
+    </div>
+  </div>
+
   <div class="foo-burst" id="fooBurst"><span>FOO!</span><small id="fooBurstName"></small></div>
   <div class="toasts" id="toasts" aria-live="polite"></div>
   <div class="conn hidden" id="connBanner">Connexion perdue… nouvelle tentative</div>
 
+  <script src="/js/core/rooms-core.js"></script>
   <script src="/js/foo/engine.js"></script>
   <script src="/js/foo/bot.js"></script>
   <script src="/js/foo/rooms.js"></script>
+  <script src="/js/morpion/engine.js"></script>
+  <script src="/js/morpion/rooms.js"></script>
   <script src="/js/app.js"></script>
 </body>
 </html>

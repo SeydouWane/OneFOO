@@ -8,23 +8,17 @@
  *  - mode "friends" : exécuté sur le serveur, salon partagé par code / lien.
  */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('./engine.js'), require('./bot.js'));
-  else root.FooRooms = factory(root.FooEngine, root.FooBot);
-})(typeof self !== 'undefined' ? self : this, function (Engine, Bot) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('./engine.js'), require('./bot.js'), require('../core/rooms-core.js'));
+  } else root.FooRooms = factory(root.FooEngine, root.FooBot, root.RoomsCore);
+})(typeof self !== 'undefined' ? self : this, function (Engine, Bot, Core) {
   'use strict';
   const { FooGame, GameError } = Engine;
+  const { TURN_MS, OFFLINE_TURN_MS, OFFLINE_AFTER_MS, AVATARS, EMOTES, pick, sanitizeName, status, player, notice, emote } = Core;
 
+  const KIND = 'foo';
   const MAX_PLAYERS = 6;
-  const TURN_MS = 30000; // temps max par tour entre amis
-  const OFFLINE_TURN_MS = 8000; // joueur hors ligne : on joue à sa place plus vite
-  const OFFLINE_AFTER_MS = 25000; // sans nouvelles depuis 25 s = hors ligne
-  const LOBBY_DROP_MS = 90000; // hors partie, un absent quitte le salon après 90 s
   const FRIENDS_BOT_LEVEL = 6;
-
-  const AVATARS = ['😎', '🦁', '🐯', '🦊', '🐼', '🐸', '🦉', '🐙', '👽', '🤠', '🦄', '🐵', '🐧', '🐨', '🦖', '👑'];
-  const BOT_AVATARS = ['🤖', '👾', '🦾', '🛸', '🧠', '⚙️'];
-  const BOT_NAMES = ['Awa', 'Moussa', 'Fatou', 'Ibou', 'Khady', 'Modou', 'Aïda', 'Cheikh', 'Binta', 'Lamine'];
-  const EMOTES = ['👍', '😂', '😮', '😡', '🔥', '😈', '🙏', '👋', '😭', '🎉'];
 
   // Le système est taquin : répliques selon ce qui se passe ({name} = joueur visé, {level} = niveau).
   const LINES = {
@@ -97,86 +91,27 @@
       '{count} cartes ! Même mon fils ne s’est jamais fait avoir comme ça, hahaha !',
     ],
   };
-  const SAY_GAP_MS = 3500; // délai minimum entre deux répliques (sauf moments forts)
   const IDLE_TEASE_MS = 15000; // un humain qui traîne se fait chambrer
 
-  const pick = (arr, rng = Math.random) => arr[Math.floor(rng() * arr.length)];
-  const sanitizeName = (n) =>
-    String(n || '')
-      .replace(/[\u0000-\u001f\u007f<>]/g, '')
-      .trim()
-      .slice(0, 16) || 'Joueur';
-  const randomId = () => Math.random().toString(36).slice(2, 10);
-
   // ------------------------------------------------------------------ création / membres
-  function human(p, now) {
-    return {
-      id: p.id,
-      name: sanitizeName(p.name),
-      avatar: AVATARS.includes(p.avatar) ? p.avatar : pick(AVATARS),
-      isBot: false,
-      lastSeen: now,
-    };
-  }
-
   function newRoom(code, mode, host, now, opts = {}) {
-    return {
-      code,
-      mode,
-      hostId: host.id,
-      players: [human(host, now)],
-      game: null,
+    return Core.newRoom(code, KIND, mode, host, now, {
       level: Bot.profile(opts.level || 1).level,
       botLevel: FRIENDS_BOT_LEVEL,
-      scores: {},
-      version: 0,
-      notices: [],
-      noticeSeq: 0,
-      emotes: [],
-      emoteSeq: 0,
-      says: [],
-      saySeq: 0,
-      voice: {},
-      timerKey: null,
-      dueAt: null,
-      turnDeadline: null,
       catchSeq: 0,
       plannedCatch: null,
-      scoredGameId: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-  }
-
-  function status(room) {
-    if (!room.game) return 'lobby';
-    return room.game.status === 'playing' ? 'playing' : 'ended';
-  }
-  const player = (room, id) => room.players.find((p) => p.id === id) || null;
-  const humans = (room) => room.players.filter((p) => !p.isBot);
-  const profileOf = (room) => Bot.profile(room.mode === 'solo' ? room.level : room.botLevel);
-
-  function notice(room, text) {
-    room.notices.push({ seq: ++room.noticeSeq, text });
-    if (room.notices.length > 8) room.notices.shift();
-  }
-  function emote(room, playerId, emoji, now) {
-    room.emotes.push({ seq: ++room.emoteSeq, playerId, emoji, at: now });
-    if (room.emotes.length > 8) room.emotes.shift();
-  }
-
-  function addBot(room) {
-    const used = new Set(room.players.map((p) => p.name));
-    const name = BOT_NAMES.find((n) => !used.has(n)) || 'Bot ' + (room.players.length + 1);
-    const usedAv = new Set(room.players.map((p) => p.avatar));
-    room.players.push({
-      id: 'bot-' + randomId(),
-      name,
-      avatar: BOT_AVATARS.find((a) => !usedAv.has(a)) || '🤖',
-      isBot: true,
-      lastSeen: 0,
     });
   }
+
+  /** Partie contre le système : le nombre d'adversaires dépend du niveau. */
+  function newSoloRoom(code, host, now, level) {
+    const room = newRoom(code, 'solo', host, now, { level });
+    for (let i = 0; i < Bot.profile(level).opponents; i++) Core.addBot(room);
+    return room;
+  }
+
+  const profileOf = (room) => Bot.profile(room.mode === 'solo' ? room.level : room.botLevel);
+  const addBot = Core.addBot;
 
   function startGame(room, now) {
     if (room.players.length < 2) throw new GameError('Il faut au moins 2 joueurs (ajoutez un bot ou invitez un ami).');
@@ -188,126 +123,26 @@
     room.updatedAt = now;
   }
 
-  function fixHost(room) {
-    const hs = humans(room);
-    if (hs.length && !hs.some((p) => p.id === room.hostId)) {
-      room.hostId = hs[0].id;
-      notice(room, `${hs[0].name} est maintenant l'hôte`);
-    }
-  }
-
-  function join(room, p, now) {
-    if (room.mode !== 'friends') throw new GameError('Aucune partie avec ce code.');
-    const existing = player(room, p.id);
-    if (existing && !existing.isBot) {
-      existing.lastSeen = now;
-      return;
-    }
-    if (status(room) === 'playing') throw new GameError('Une partie est déjà en cours dans ce salon. Réessayez à la fin de la manche.');
-    if (existing) room.players.splice(room.players.indexOf(existing), 1); // ancien joueur remplacé par un bot
-    if (room.players.length >= MAX_PLAYERS) {
-      const botP = room.players.find((x) => x.isBot);
-      if (!botP) throw new GameError('Salon complet (6 joueurs max).');
-      room.players.splice(room.players.indexOf(botP), 1); // un ami remplace un bot
-    }
-    if (status(room) === 'ended') room.game = null; // retour au salon pour accueillir le nouveau
-    const h = human(p, now);
-    room.players.push(h);
-    notice(room, `${h.name} a rejoint la partie`);
-  }
-
-  /** @returns {boolean} true si le salon est désormais vide (à supprimer) */
-  function leave(room, pid) {
-    if (room.voice) delete room.voice[pid];
-    const idx = room.players.findIndex((p) => p.id === pid);
-    if (idx === -1) return humans(room).length === 0;
-    const p = room.players[idx];
-    const g = room.game;
-    if (g && g.status === 'playing' && g.player(pid)) {
-      // Le joueur qui part est remplacé par un bot pour que la manche continue.
-      p.isBot = true;
-      p.replaced = true;
-      p.avatar = '🤖';
-      const gp = g.player(pid);
-      gp.isBot = true;
-      gp.avatar = '🤖';
-      notice(room, `${p.name} a quitté la partie (remplacé par un bot)`);
-      g.checkEnd(); // plus aucun humain en jeu : la manche se termine
-    } else {
-      room.players.splice(idx, 1);
-      notice(room, `${p.name} a quitté le salon`);
-    }
-    if (!humans(room).length || room.mode === 'solo') return true;
-    fixHost(room);
-    return false;
-  }
-
-  function touch(room, pid, now) {
-    const p = player(room, pid);
-    if (p && !p.isBot) p.lastSeen = now;
-  }
+  const join = (room, p, now) => Core.join(room, p, now, MAX_PLAYERS);
+  // Le joueur qui part est remplacé par un bot ; s'il ne reste plus d'humain en jeu, la manche se termine.
+  const leave = (room, pid) => Core.leave(room, pid, (r, g) => g.checkEnd());
+  const touch = Core.touch;
 
   // ------------------------------------------------------------------ actions des joueurs
-  function hostOnly(room, pid) {
-    if (room.mode === 'friends' && room.hostId !== pid) throw new GameError("Action réservée à l'hôte.");
-  }
-
   function act(room, pid, action, data, now) {
-    const p = player(room, pid);
-    if (!p || p.isBot) throw new GameError('Vous ne faites pas partie de cette partie.');
-    p.lastSeen = now;
+    const common = Core.actCommon(room, pid, action, data, now, { maxPlayers: MAX_PLAYERS, start: startGame });
+    if (common.handled) return common.result;
     const g = room.game;
     const needGame = () => {
       if (!g) throw new GameError('Aucune partie en cours.');
       return g;
     };
     switch (action) {
-      case 'profile':
-        if (status(room) !== 'playing') {
-          p.name = sanitizeName(data.name);
-          if (AVATARS.includes(data.avatar)) p.avatar = data.avatar;
-        }
-        return;
-      case 'addBot':
-        hostOnly(room, pid);
-        if (status(room) === 'playing') throw new GameError('Partie en cours.');
-        if (room.players.length >= MAX_PLAYERS) throw new GameError('Salon complet.');
-        addBot(room);
-        return;
-      case 'removeBot': {
-        hostOnly(room, pid);
-        if (status(room) === 'playing') throw new GameError('Partie en cours.');
-        const i = room.players.findIndex((x) => x.isBot && x.id === data.id);
-        if (i !== -1) room.players.splice(i, 1);
-        return;
-      }
-      case 'start':
-        hostOnly(room, pid);
-        if (status(room) === 'playing') throw new GameError('Partie déjà en cours.');
-        startGame(room, now);
-        return;
-      case 'lobby':
-        hostOnly(room, pid);
-        if (status(room) === 'playing') throw new GameError('Partie en cours.');
-        room.game = null;
-        return;
-      case 'emote':
-        if (!EMOTES.includes(data.emoji)) throw new GameError('Réaction inconnue.');
-        if (now - (p.lastEmote || 0) < 700) return;
-        p.lastEmote = now;
-        emote(room, pid, data.emoji, now);
-        return;
       case 'play': {
         const ids = Array.isArray(data.cardIds) ? data.cardIds.slice(0, 10).map(String) : String(data.cardId);
         needGame().play(pid, ids, data.color);
         return;
       }
-      case 'voice':
-        // micro activé / coupé (la voix passe directement entre téléphones, voir le client)
-        room.voice = room.voice || {};
-        if (data.on) room.voice[pid] = now;
-        else delete room.voice[pid];
-        return;
       case 'draw':
         return { playable: needGame().draw(pid).playable };
       case 'pass':
@@ -354,24 +189,6 @@
   }
 
   // ------------------------------------------------------------------ le système taquin
-  const fill = (text, vars) => text.replace(/\{(\w+)\}/g, (_, k) => (vars[k] != null ? vars[k] : ''));
-
-  function sayLine(room, speakerId, key, vars, now, rng) {
-    const pool = (LINES[key] || []).filter((l) => !l.includes('{name}') || vars.name);
-    if (!pool.length) return false;
-    room.recentLines = room.recentLines || [];
-    const fresh = pool.filter((l) => !room.recentLines.includes(l));
-    const line = pick(fresh.length ? fresh : pool, rng);
-    room.recentLines.push(line);
-    if (room.recentLines.length > 12) room.recentLines.shift();
-    room.says = room.says || [];
-    room.saySeq = (room.saySeq || 0) + 1;
-    room.says.push({ seq: room.saySeq, playerId: speakerId, text: fill(line, vars), at: now });
-    if (room.says.length > 6) room.says.shift();
-    room.lastSayAt = now;
-    return true;
-  }
-
   /** Les bots réagissent aux derniers événements de la partie (une réplique à la fois). */
   function banter(room, now, rng) {
     const g = room.game;
@@ -482,11 +299,7 @@
       }
     }
 
-    if (!cands.length) return changed;
-    cands.sort((a, b) => b.prio - a.prio);
-    const best = cands[0];
-    if (best.prio < 3 && now - (room.lastSayAt || 0) < SAY_GAP_MS) return changed;
-    return sayLine(room, best.speaker, best.key, best.vars, now, rng) || changed;
+    return Core.chooseLine(room, LINES, cands, now, rng) || changed;
   }
 
   function autoTurn(room, g, cur) {
@@ -502,32 +315,13 @@
    * @returns {boolean} true si le salon a changé (à sauvegarder)
    */
   function advance(room, now, rng = Math.random) {
-    let changed = false;
-
-    // Hors partie, les absents depuis longtemps quittent le salon.
-    if (room.mode === 'friends' && status(room) !== 'playing') {
-      const gone = room.players.filter((p) => !p.isBot && now - p.lastSeen > LOBBY_DROP_MS);
-      for (const p of gone) {
-        room.players.splice(room.players.indexOf(p), 1);
-        if (room.voice) delete room.voice[p.id];
-        notice(room, `${p.name} a quitté le salon`);
-        changed = true;
-      }
-      if (gone.length) fixHost(room);
-    }
+    let changed = Core.dropAbsent(room, now); // hors partie, les absents quittent le salon
 
     for (let guard = 0; guard < 16; guard++) {
       const g = room.game;
       if (!g) break;
       if (g.status === 'ended') {
-        if (room.scoredGameId !== g.id) {
-          room.scoredGameId = g.id;
-          room.scores[g.winnerId] = (room.scores[g.winnerId] || 0) + 1;
-          // les joueurs partis en cours de manche (remplacés par un bot) quittent le salon
-          room.players = room.players.filter((p) => !p.replaced);
-          room.timerKey = null;
-          room.dueAt = null;
-          room.turnDeadline = null;
+        if (Core.scoreEnded(room)) {
           room.plannedCatch = null;
           changed = true;
         }
@@ -602,50 +396,30 @@
 
   // ------------------------------------------------------------------ vue envoyée au joueur
   function view(room, pid, now) {
-    const prof = profileOf(room);
-    return {
-      code: room.code,
-      mode: room.mode,
-      me: pid,
-      version: room.version,
-      hostId: room.hostId,
-      status: status(room),
-      level: room.level,
-      levelTitle: prof.title,
+    return Core.viewBase(room, pid, now, {
+      levelTitle: profileOf(room).title,
       maxPlayers: MAX_PLAYERS,
-      players: room.players.map((p) => ({
-        id: p.id,
-        name: p.name,
-        avatar: p.avatar,
-        isBot: p.isBot,
-        connected: p.isBot || now - p.lastSeen < OFFLINE_AFTER_MS,
-        wins: room.scores[p.id] || 0,
-        mic: !!(room.voice && room.voice[p.id]),
-      })),
       game: room.game ? room.game.viewFor(pid) : null,
-      turnDeadline: room.turnDeadline,
-      turnMs: TURN_MS,
-      serverNow: now,
-      notices: room.notices.slice(-5),
-      emotes: room.emotes.slice(-6),
-      says: (room.says || []).slice(-4),
-    };
+    });
   }
 
   /** Reconstruit un salon depuis du JSON (Redis / localStorage). */
   function parse(json) {
     const room = typeof json === 'string' ? JSON.parse(json) : json;
+    room.kind = room.kind || KIND;
     if (room.game) room.game = FooGame.fromJSON(room.game);
     return room;
   }
 
   return {
+    KIND,
     MAX_PLAYERS,
     TURN_MS,
     AVATARS,
     EMOTES,
     sanitizeName,
     newRoom,
+    newSoloRoom,
     status,
     addBot,
     startGame,

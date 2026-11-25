@@ -1,9 +1,17 @@
 /* OneFOO — client */
 (() => {
   'use strict';
-  const Engine = window.FooEngine;
+  const Core = window.RoomsCore;
   const Bot = window.FooBot;
-  const Rooms = window.FooRooms;
+  const MEngine = window.MorpionEngine;
+  // Logique des salons de chaque jeu (partagée avec le serveur)
+  const ROOMS = { foo: window.FooRooms, morpion: window.MorpionRooms };
+  const GAME_NAMES = { foo: 'FOO!', morpion: 'Morpion' };
+  const MARK = { X: '✕', O: '◯' };
+  const MARK_SVG = {
+    X: '<svg viewBox="0 0 100 100" aria-hidden="true"><path pathLength="100" d="M24 24 L76 76 M76 24 L24 76"/></svg>',
+    O: '<svg viewBox="0 0 100 100" aria-hidden="true"><circle pathLength="100" cx="50" cy="50" r="28"/></svg>',
+  };
 
   // ================================================================ utilitaires
   const $ = (s, el = document) => el.querySelector(s);
@@ -45,8 +53,8 @@
   }
 
   // ================================================================ constantes
-  const AVATARS = Rooms.AVATARS;
-  const EMOTES = Rooms.EMOTES;
+  const AVATARS = Core.AVATARS;
+  const EMOTES = Core.EMOTES;
   const COLOR_NAME = { red: 'Rouge', yellow: 'Jaune', green: 'Vert', blue: 'Bleu' };
   const COLOR_SYM = { red: '▲', yellow: '●', green: '◆', blue: '■' };
   const COLOR_CSS = { red: 'var(--red)', yellow: 'var(--yellow)', green: 'var(--green)', blue: 'var(--blue)' };
@@ -79,14 +87,23 @@
     me.avatar = AVATARS[Math.floor(Math.random() * AVATARS.length)];
     store.set('onefoo.avatar', me.avatar);
   }
-  const stats = Object.assign({ level: 1, wins: 0, losses: 0, best: 1, counted: [] }, store.get('onefoo.foo.stats', {}));
-  const saveStats = () => store.set('onefoo.foo.stats', stats);
+  // Progression contre le système, séparée pour chaque jeu
+  const statsCache = {};
+  function statsFor(kind) {
+    if (!statsCache[kind]) {
+      statsCache[kind] = Object.assign({ level: 1, wins: 0, losses: 0, draws: 0, best: 1, counted: [] }, store.get(`onefoo.${kind}.stats`, {}));
+    }
+    return statsCache[kind];
+  }
+  const saveStats = (kind) => store.set(`onefoo.${kind}.stats`, statsFor(kind));
   let muted = !!store.get('onefoo.muted', false);
   const prefs = Object.assign({ sort: 'color', expanded: false }, store.get('onefoo.prefs', {}));
   const savePrefs = () => store.set('onefoo.prefs', prefs);
 
   const state = {
     screen: 'home',
+    kind: 'foo', // jeu choisi dans le hub
+    mBoardKey: null,
     room: null,
     pendingJoin: null,
     leftCodes: new Set(),
@@ -707,14 +724,17 @@
   const solo = {
     room: null,
     ticker: null,
-    start(level) {
+    R() {
+      return ROOMS[(this.room && this.room.kind) || 'foo'];
+    },
+    start(kind, level) {
       this.stop();
+      const R = ROOMS[kind] || ROOMS.foo;
       const now = Date.now();
       const code = 'SOLO-' + now.toString(36);
-      const room = Rooms.newRoom(code, 'solo', { id: LOCAL_ID, name: me.name, avatar: me.avatar }, now, { level });
-      for (let i = 0; i < Bot.profile(level).opponents; i++) Rooms.addBot(room);
-      Rooms.startGame(room, now);
-      Rooms.advance(room, now);
+      const room = R.newSoloRoom(code, { id: LOCAL_ID, name: me.name, avatar: me.avatar }, now, level);
+      R.startGame(room, now);
+      R.advance(room, now);
       this.room = room;
       this.commit();
       this.run();
@@ -725,12 +745,12 @@
         if (!this.room) return;
         let changed = false;
         try {
-          changed = Rooms.advance(this.room, Date.now());
+          changed = this.R().advance(this.room, Date.now());
         } catch (err) {
           console.error(err);
         }
         if (changed) this.commit();
-        if (Rooms.status(this.room) !== 'playing') {
+        if (this.room && this.R().status(this.room) !== 'playing') {
           clearInterval(this.ticker);
           this.ticker = null;
         }
@@ -740,8 +760,8 @@
       if (!this.room) return { ok: false };
       try {
         const now = Date.now();
-        const out = Rooms.act(this.room, LOCAL_ID, action, data, now);
-        Rooms.advance(this.room, now);
+        const out = this.R().act(this.room, LOCAL_ID, action, data, now);
+        this.R().advance(this.room, now);
         this.commit();
         return { ok: true, ...(out || {}) };
       } catch (err) {
@@ -751,9 +771,9 @@
     },
     commit() {
       this.room.version++;
-      if (Rooms.status(this.room) === 'playing') store.set('onefoo.solo', this.room);
+      if (this.R().status(this.room) === 'playing') store.set('onefoo.solo', this.room);
       else store.del('onefoo.solo');
-      applyState(Rooms.view(this.room, LOCAL_ID, Date.now()));
+      applyState(this.R().view(this.room, LOCAL_ID, Date.now()));
     },
     stop() {
       clearInterval(this.ticker);
@@ -765,7 +785,7 @@
       const saved = store.get('onefoo.solo', null);
       if (!saved) return false;
       try {
-        const room = Rooms.parse(saved);
+        const room = (ROOMS[saved.kind] || ROOMS.foo).parse(saved);
         if (!room.game || room.game.status !== 'playing') throw new Error('terminée');
         this.room = room;
         this.commit();
@@ -802,6 +822,7 @@
     }
 
     playerId = room.me;
+    if (room.kind && ROOMS[room.kind]) state.kind = room.kind;
     state.clockOffset = room.serverNow - Date.now();
     const prev = state.room;
     state.room = room;
@@ -855,7 +876,7 @@
     if (state.room && state.room.mode === 'friends' && state.room.status !== 'playing') api('profile');
   }
   function setName(v) {
-    v = Rooms.sanitizeName(v);
+    v = Core.sanitizeName(v);
     if (v === me.name) return;
     me.name = v;
     store.set('onefoo.name', v);
@@ -896,7 +917,8 @@
     openModal('avatarModal');
   });
 
-  $('#tileFoo').addEventListener('click', () => requireName() && show('hub'));
+  $('#tileFoo').addEventListener('click', () => openGame('foo'));
+  $('#tileMorpion').addEventListener('click', () => openGame('morpion'));
 
   // Lien d'invitation : /r/CODE ou ?code=CODE
   (function parseInvite() {
@@ -923,24 +945,45 @@
   }
   $('#joinBannerBtn').addEventListener('click', () => requireName() && tryPendingJoin());
 
-  // ================================================================ hub FOO!
+  // ================================================================ hub du jeu choisi
+  /** Description du prochain défi contre le système pour ce jeu et ce niveau. */
+  function challengeText(kind, lv) {
+    if (kind === 'morpion') {
+      const p = MEngine.profile(lv);
+      return `grille ${p.size}×${p.size}, aligner ${p.align}${p.botStarts ? ', le système commence' : ''}`;
+    }
+    const n = opponentsFor(lv);
+    return `${n} adversaire${n > 1 ? 's' : ''} IA`;
+  }
+
   function renderHub() {
+    const kind = state.kind;
+    const stats = statsFor(kind);
     const lv = stats.level;
+    $('#hubTitle').textContent = GAME_NAMES[kind];
     $('#sysLevel').textContent = lv;
     $('#sysLevelBadge').textContent = lv;
     $('#sysTitle').textContent = levelTitle(lv);
-    const n = opponentsFor(lv);
     const nextTier = TIERS.find(([min]) => min > lv);
-    $('#sysNext').textContent =
-      `Prochain défi : ${n} adversaire${n > 1 ? 's' : ''} IA` + (nextTier ? ` · rang ${nextTier[1]} au niv. ${nextTier[0]}` : '');
+    $('#sysNext').textContent = `Prochain défi : ${challengeText(kind, lv)}` + (nextTier ? ` · rang ${nextTier[1]} au niv. ${nextTier[0]}` : '');
     const cur = levelTitle(lv);
     $('#ladder').replaceChildren(
       ...TIERS.map(([min, name]) => h('span', { class: name === cur ? 'now' : min < lv ? 'done' : '', text: `${name} · ${min}` }))
     );
     $('#stWins').textContent = stats.wins;
-    $('#stLosses').textContent = stats.losses;
+    $('#stLosses').textContent = stats.losses + (kind === 'morpion' && stats.draws ? ` (+${stats.draws} nuls)` : '');
     $('#stBest').textContent = stats.best;
   }
+
+  function openGame(kind) {
+    if (!requireName()) return;
+    state.kind = kind;
+    renderHub();
+    show('hub');
+  }
+  const openRules = (kind) => openModal(kind === 'morpion' ? 'rulesMorpionModal' : 'rulesModal');
+  $('#hubRulesBtn').addEventListener('click', () => openRules(state.kind));
+  $('#lobbyRulesBtn').addEventListener('click', () => openRules((state.room && state.room.kind) || state.kind));
 
   async function guarded(fn) {
     if (state.busy) return;
@@ -960,10 +1003,12 @@
     }
     stopPolling();
   }
-  function startSolo() {
+  function startSolo(kind) {
     if (!requireName()) return;
+    kind = typeof kind === 'string' ? kind : state.kind;
+    state.kind = kind;
     leaveFriendsRoom();
-    solo.start(stats.level);
+    solo.start(kind, statsFor(kind).level);
   }
   async function joinRoom(code) {
     code = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -982,13 +1027,13 @@
     if (res && !res.ok && state.screen !== 'hub') show('hub');
   }
 
-  $('#soloBtn').addEventListener('click', startSolo);
+  $('#soloBtn').addEventListener('click', () => startSolo(state.kind));
   $('#createBtn').addEventListener('click', () =>
     guarded(async () => {
       if (!requireName()) return;
       leaveFriendsRoom();
       solo.stop();
-      await api('create');
+      await api('create', { game: state.kind });
     })
   );
   const codeInput = $('#codeInput');
@@ -996,9 +1041,9 @@
   codeInput.addEventListener('keydown', (e) => e.key === 'Enter' && joinRoom(codeInput.value));
   $('#joinBtn').addEventListener('click', () => joinRoom(codeInput.value));
   $('#resetLevelBtn').addEventListener('click', () => {
-    if (!confirm('Remettre le système au niveau 1 ? Vos statistiques seront aussi remises à zéro.')) return;
-    Object.assign(stats, { level: 1, wins: 0, losses: 0, best: 1 });
-    saveStats();
+    if (!confirm(`Remettre le système de ${GAME_NAMES[state.kind]} au niveau 1 ? Vos statistiques seront aussi remises à zéro.`)) return;
+    Object.assign(statsFor(state.kind), { level: 1, wins: 0, losses: 0, draws: 0, best: 1 });
+    saveStats(state.kind);
     renderHub();
     toast('Le système repart au niveau 1');
   });
@@ -1018,7 +1063,12 @@
       .catch(() => {});
   }
   const inviteLink = (code) => `${shareOrigin}/r/${code}`;
-  const inviteText = (code) => `Viens jouer à FOO! avec moi sur OneFOO 🎴 Code : ${code}`;
+  const inviteText = (code) => {
+    const kind = (state.room && state.room.kind) || 'foo';
+    return kind === 'morpion'
+      ? `Viens jouer au Morpion avec moi sur OneFOO ✕◯ Code : ${code}`
+      : `Viens jouer à FOO! avec moi sur OneFOO 🎴 Code : ${code}`;
+  };
 
   async function copyText(text) {
     try {
@@ -1073,7 +1123,21 @@
     start.disabled = room.players.length < 2;
     start.textContent = room.players.length < 2 ? 'En attente d’un ami ou d’un bot…' : `Lancer la partie (${room.players.length} joueurs)`;
     $('#addBotBtn').disabled = room.players.length >= room.maxPlayers;
+
+    // Spécificités du jeu
+    const morpion = room.kind === 'morpion';
+    $('#lobbyTitle').textContent = `Salon · ${GAME_NAMES[room.kind] || 'FOO!'}`;
+    $('#lobbyHint').textContent = `Envoyez le code ou le lien à vos amis : ils rejoignent en un clic, sans inscription. ${morpion ? '2 joueurs (ou un ami + un bot).' : '2 à 6 joueurs.'}`;
+    $('#mOptions').classList.toggle('hidden', !morpion);
+    if (morpion) {
+      const size = (room.options && room.options.size) || 3;
+      $$('#mSizeSeg button').forEach((b) => {
+        b.classList.toggle('sel', Number(b.dataset.size) === size);
+        b.disabled = !isHost;
+      });
+    }
   }
+  $$('#mSizeSeg button').forEach((b) => b.addEventListener('click', () => send('options', { size: Number(b.dataset.size) })));
 
   $('#shareBtn').addEventListener('click', async () => {
     const code = state.room && state.room.code;
@@ -1159,21 +1223,39 @@
     return p ? p.name : '?';
   }
 
+  /** Nouvelle manche : on ne rejoue pas les anciens événements (ex. rechargement en cours de partie). */
+  function resetForNewGame(g) {
+    if (g.id === state.lastGameId) return;
+    state.lastGameId = g.id;
+    const midGame = g.events.some((e) => e.type !== 'start');
+    state.lastEventSeq = midGame ? g.events.reduce((m, e) => Math.max(m, e.seq), 0) : 0;
+    state.prevHandIds = new Set();
+    state.lastTopId = null;
+    state.actionText = '';
+    state.lastTurnSeq = null;
+    state.mBoardKey = null;
+    if (state.resultShownFor !== g.id) closeModal('resultModal');
+    closeModal('colorModal');
+  }
+
   function renderGame(room) {
     const g = room.game;
     if (!g) return;
-    if (g.id !== state.lastGameId) {
-      state.lastGameId = g.id;
-      // Nouvelle manche : on ne rejoue pas les anciens événements (ex. rechargement en cours de partie).
-      const midGame = g.events.some((e) => e.type !== 'start');
-      state.lastEventSeq = midGame ? g.events.reduce((m, e) => Math.max(m, e.seq), 0) : 0;
-      state.prevHandIds = new Set();
-      state.lastTopId = null;
-      state.actionText = '';
-      state.lastTurnSeq = null;
-      if (state.resultShownFor !== g.id) closeModal('resultModal');
-      closeModal('colorModal');
+    $('.game').dataset.kind = room.kind || 'foo';
+    resetForNewGame(g);
+    if (room.kind === 'morpion') return renderMorpion(room, g);
+    renderFoo(room, g);
+  }
+
+  function myTurnFeedback(g, myTurn) {
+    if (myTurn && state.lastTurnSeq !== g.turnSeq) {
+      state.lastTurnSeq = g.turnSeq;
+      sfx('turn');
+      vibrate(25);
     }
+  }
+
+  function renderFoo(room, g) {
     const mine = g.players.find((p) => p.id === playerId);
     const myTurn = g.status === 'playing' && g.turnPlayerId === playerId;
 
@@ -1190,13 +1272,201 @@
     renderControls(g, mine, myTurn);
     renderStatus(g, myTurn);
 
-    if (myTurn && state.lastTurnSeq !== g.turnSeq) {
-      state.lastTurnSeq = g.turnSeq;
-      sfx('turn');
-      vibrate(25);
-    }
+    myTurnFeedback(g, myTurn);
     if (!myTurn) closeModal('colorModal');
     if (g.status === 'ended') showResult(room, g);
+  }
+
+  // ================================================================ MORPION
+  function renderMorpion(room, g) {
+    const myTurn = g.status === 'playing' && g.turnPlayerId === playerId;
+    const mine = g.players.find((p) => p.id === playerId);
+    $('#gameInfo').replaceChildren(
+      ...(room.mode === 'solo'
+        ? [h('b', { text: `Le système · niveau ${room.level}` }), h('br'), `${room.levelTitle} · ${g.size}×${g.size}`]
+        : [h('b', { text: `Salon ${room.code}` }), h('br'), `Morpion ${g.size}×${g.size} · aligner ${g.align}`])
+    );
+    processMorpionEvents(g);
+    // Avatars : on réutilise les pastilles des adversaires, avec leur symbole à la place du nombre de cartes
+    renderOpponents(room, {
+      status: g.status,
+      turnPlayerId: g.turnPlayerId,
+      players: g.players.map((p) => ({ ...p, cardCount: MARK[p.mark], saidFoo: false, rank: null })),
+    });
+    renderMorpionBoard(g, myTurn);
+
+    const main = $('#statusMain');
+    const markSpan = (m) => h('span', { class: 'mk-' + m, text: MARK[m] });
+    if (g.status === 'ended') {
+      main.replaceChildren(g.isDraw ? 'Match nul !' : g.winnerId === playerId ? 'Vous avez gagné ! 🎉' : `${nameOf(g, g.winnerId)} a gagné`);
+    } else if (myTurn) {
+      main.replaceChildren('À vous de jouer ', markSpan(mine.mark), ` · alignez ${g.align}`);
+    } else {
+      const cur = g.players.find((p) => p.id === g.turnPlayerId);
+      main.replaceChildren(`${nameOf(g, g.turnPlayerId)} réfléchit… `, markSpan(cur.mark));
+    }
+    main.classList.toggle('mine', myTurn);
+    $('#statusSub').textContent = state.actionText;
+
+    myTurnFeedback(g, myTurn);
+    if (g.status === 'ended') showMorpionResult(room, g);
+  }
+
+  function renderMorpionBoard(g, myTurn) {
+    const board = $('#mBoard');
+    const n = g.size;
+    // (Re)construit la grille au changement de partie ou de taille
+    const key = `${g.id}:${n}`;
+    if (state.mBoardKey !== key) {
+      state.mBoardKey = key;
+      board.style.setProperty('--n', n);
+      board.className = `m-board n${n}`;
+      board.replaceChildren(
+        ...g.board.map((_, i) =>
+          h('button', {
+            class: 'm-cell',
+            role: 'gridcell',
+            'aria-label': `Case ${Math.floor(i / n) + 1}-${(i % n) + 1}`,
+            dataset: null,
+            onclick: () => onMorpionCell(i),
+          })
+        )
+      );
+    }
+    board.classList.toggle('mine', myTurn);
+    board.classList.toggle('ended', g.status === 'ended');
+    const win = new Set(g.winLine || []);
+    [...board.children].forEach((cell, i) => {
+      const mark = g.board[i];
+      const had = cell.dataset.mark || '';
+      if ((mark || '') !== had) {
+        cell.dataset.mark = mark || '';
+        cell.innerHTML = mark ? MARK_SVG[mark] : '';
+        cell.classList.toggle('fresh', !!mark);
+      } else cell.classList.remove('fresh');
+      cell.classList.toggle('X', mark === 'X');
+      cell.classList.toggle('O', mark === 'O');
+      cell.classList.toggle('free', !mark && g.status === 'playing');
+      cell.classList.toggle('last', g.lastMove === i);
+      cell.classList.toggle('win', win.has(i));
+      cell.setAttribute('aria-label', `Case ${Math.floor(i / n) + 1}-${(i % n) + 1}${mark ? ' : ' + (mark === 'X' ? 'croix' : 'rond') : ''}`);
+    });
+  }
+
+  function onMorpionCell(i) {
+    const g = state.room && state.room.game;
+    if (!g || state.room.kind !== 'morpion' || g.status !== 'playing') return;
+    if (g.turnPlayerId !== playerId) {
+      shake($('#statusMain'));
+      return;
+    }
+    if (g.board[i]) return;
+    guarded(async () => {
+      const res = await send('move', { cell: i });
+      if (res && res.ok) sfx('play');
+    });
+  }
+
+  function processMorpionEvents(g) {
+    const fresh = g.events.filter((e) => e.seq > state.lastEventSeq);
+    if (!fresh.length) return;
+    state.lastEventSeq = fresh[fresh.length - 1].seq;
+    for (const e of fresh) {
+      const isMe = e.playerId === playerId;
+      const who = nameOf(g, e.playerId);
+      switch (e.type) {
+        case 'start':
+          state.actionText = isMe ? 'Vous commencez la partie' : `${who} commence la partie`;
+          break;
+        case 'move':
+          if (!isMe) sfx('play');
+          state.actionText = `${who} ${isMe ? 'jouez' : 'joue'} ${MARK[e.mark]}`;
+          break;
+        case 'block':
+          state.actionText = isMe ? 'Bien vu, vous bloquez !' : `${who} vous bloque !`;
+          break;
+        case 'threat':
+          if (e.target === playerId) {
+            state.actionText = `⚠️ ${who} menace d'aligner !`;
+            vibrate(30);
+          } else if (isMe) state.actionText = e.count > 1 ? 'Double menace ! 😈' : 'Vous menacez d’aligner !';
+          break;
+      }
+    }
+  }
+
+  function showMorpionResult(room, g) {
+    const iWon = g.winnerId === playerId;
+    const draw = g.isDraw;
+    if (state.resultShownFor !== g.id) {
+      state.resultShownFor = g.id;
+      const winner = g.players.find((p) => p.id === g.winnerId);
+      let before = null;
+      if (room.mode === 'solo') {
+        const stats = statsFor('morpion');
+        if (!stats.counted.includes(g.id)) {
+          stats.counted = [...stats.counted.slice(-30), g.id];
+          if (iWon) {
+            before = stats.level;
+            stats.level = Math.min(99, stats.level + 1);
+            stats.wins++;
+            stats.best = Math.max(stats.best, stats.level);
+          } else if (draw) stats.draws = (stats.draws || 0) + 1;
+          else stats.losses++;
+          saveStats('morpion');
+        }
+        const lv = stats.level;
+        $('#levelUp').classList.toggle('hidden', before === null);
+        if (iWon) {
+          const next = MEngine.profile(lv);
+          const prev = before !== null ? MEngine.profile(before) : next;
+          let extra = ' Il sera plus malin…';
+          if (next.size !== prev.size) extra = ` Nouvelle grille : ${next.size}×${next.size}, il faut aligner ${next.align} !`;
+          else if (next.botStarts && !prev.botStarts) extra = ' Désormais, c’est lui qui commence !';
+          $('#resultIcon').textContent = '🏆';
+          $('#resultTitle').textContent = 'Victoire !';
+          $('#resultText').textContent = before !== null ? `Le système monte au niveau ${lv} · ${levelTitle(lv)}.${extra}` : `Le système est au niveau ${lv}.`;
+          if (before !== null) {
+            $('#lvOld').textContent = before;
+            $('#lvNew').textContent = lv;
+          }
+        } else if (draw) {
+          $('#resultIcon').textContent = '🤝';
+          $('#resultTitle').textContent = 'Match nul';
+          $('#resultText').textContent = `Personne n'a aligné. Le système reste au niveau ${lv} : gagnez pour le faire monter !`;
+        } else {
+          $('#resultIcon').textContent = '🤖';
+          $('#resultTitle').textContent = 'Le système a gagné';
+          $('#resultText').textContent = `${winner ? winner.name : 'Le système'} a aligné ${g.align}. Le système reste au niveau ${lv}. Retentez votre chance !`;
+        }
+      } else {
+        $('#levelUp').classList.add('hidden');
+        $('#resultIcon').textContent = draw ? '🤝' : iWon ? '🏆' : '✕◯';
+        $('#resultTitle').textContent = draw ? 'Match nul' : iWon ? 'Vous gagnez la manche !' : `${winner ? winner.name : '?'} gagne la manche`;
+        $('#resultText').textContent = draw ? 'Grille pleine, personne n’a aligné. Revanche ?' : iWon ? 'Bravo ! Prêt pour la revanche ?' : 'La revanche vous attend !';
+      }
+      $('#ranking').replaceChildren(
+        ...g.players.map((p) => {
+          const rp = room.players.find((x) => x.id === p.id);
+          const wins = room.mode === 'friends' && rp && rp.wins ? ` · 🏆 ${rp.wins}` : '';
+          const info = draw ? 'Nul' : p.id === g.winnerId ? 'Gagnant' : 'Perdu';
+          return h(
+            'li',
+            { class: p.id === g.winnerId ? 'win' : '' },
+            h('span', { class: 'r-medal mk-' + p.mark, text: MARK[p.mark] }),
+            h('span', { text: p.avatar }),
+            h('span', { class: 'r-name', text: p.id === playerId ? `${p.name} (vous)` : p.name }),
+            h('span', { class: 'r-info', text: info + wins })
+          );
+        })
+      );
+      sfx(iWon ? 'win' : draw ? 'turn' : 'lose');
+      if (iWon) vibrate([80, 60, 120]);
+      setTimeout(() => {
+        if (state.room && state.room.game && state.room.game.id === g.id && state.room.status === 'ended') openModal('resultModal');
+      }, 1300);
+    }
+    renderResultActions(room, iWon);
   }
 
   function renderOpponents(room, g) {
@@ -1229,6 +1499,7 @@
       $('.opp-sub', el).textContent = sub;
       el.classList.toggle('done', !!p.rank && g.status === 'playing');
       el.classList.toggle('active', active);
+      el.dataset.mark = p.mark || '';
       el.classList.toggle('danger', p.cardCount === 1 && g.status === 'playing');
       el.classList.toggle('offline', offline);
       const foo = $('.opp-foo', el);
@@ -1694,6 +1965,7 @@
       const ranked = order.map((id) => g.players.find((p) => p.id === id)).filter(Boolean);
       const total = ranked.length;
       const myPlace = ranked.findIndex((p) => p.id === playerId) + 1;
+      const stats = statsFor('foo');
       let before = null;
       if (room.mode === 'solo' && !stats.counted.includes(g.id)) {
         stats.counted = [...stats.counted.slice(-30), g.id];
@@ -1703,7 +1975,7 @@
           stats.wins++;
           stats.best = Math.max(stats.best, stats.level);
         } else stats.losses++;
-        saveStats();
+        saveStats('foo');
       }
       $('#levelUp').classList.toggle('hidden', before === null);
       if (room.mode === 'solo') {
@@ -1761,8 +2033,9 @@
   function renderResultActions(room, iWon) {
     const box = $('#resultActions');
     if (room.mode === 'solo') {
+      const kind = room.kind || 'foo';
       box.replaceChildren(
-        h('button', { class: 'btn primary big', onclick: startSolo, text: iWon ? `Affronter le niveau ${stats.level} ➜` : 'Rejouer' }),
+        h('button', { class: 'btn primary big', onclick: () => startSolo(kind), text: iWon ? `Affronter le niveau ${statsFor(kind).level} ➜` : 'Rejouer' }),
         h('button', { class: 'btn secondary', onclick: leaveToHub, text: 'Menu' })
       );
     } else {

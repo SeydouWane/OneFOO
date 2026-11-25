@@ -510,6 +510,72 @@ input.shake, .shake { animation: shake 0.4s; }
   background: #3a1630; color: #ffc2d6; border: 1px solid rgba(255,79,139,0.5); padding: 8px 16px; border-radius: 99px; font-size: 14px;
 }
 
+/* ============================================================
+   MORPION
+   ============================================================ */
+:root { --xc: #ff5c8a; --oc: #49b6ff; }
+.game-tile.playable { align-items: center; text-align: center; padding: 16px 8px; gap: 6px; transition: transform 0.15s; border-color: rgba(73,182,255,0.35); background: radial-gradient(240px 140px at 50% 0%, rgba(73,182,255,0.16), transparent 70%), var(--panel); }
+.game-tile.playable:active { transform: scale(0.97); }
+.game-tile.playable b { font-size: 18px; }
+.game-tile small.new { font-size: 12px; color: #8fd3ff; background: rgba(73,182,255,0.14); border-radius: 99px; padding: 2px 10px; }
+.m-art { display: grid; grid-template-columns: repeat(3, 18px); gap: 3px; }
+.m-art i { width: 18px; height: 18px; border-radius: 4px; background: rgba(255,255,255,0.08); position: relative; }
+.m-art i.x::before, .m-art i.x::after { content: ''; position: absolute; left: 3px; right: 3px; top: 8px; height: 2.5px; border-radius: 2px; background: var(--xc); transform: rotate(45deg); }
+.m-art i.x::after { transform: rotate(-45deg); }
+.m-art i.o::before { content: ''; position: absolute; inset: 3px; border-radius: 50%; border: 2.5px solid var(--oc); }
+
+/* le jeu affiché selon le type de salon */
+.game:not([data-kind='morpion']) .m-board { display: none; }
+.game[data-kind='morpion'] .actions,
+.game[data-kind='morpion'] .hand-wrap,
+.game[data-kind='morpion'] .table > :not(.m-board) { display: none; }
+.game[data-kind='morpion'] .table { --glow: rgba(73,182,255,0.16); min-height: 0; padding: 6px 0; }
+.game[data-kind='morpion'] .status { padding-bottom: calc(16px + var(--safe-b)); }
+
+.m-board {
+  --n: 3;
+  position: relative; z-index: 1; display: grid; gap: 6px;
+  grid-template-columns: repeat(var(--n), minmax(0, 1fr)); grid-template-rows: repeat(var(--n), minmax(0, 1fr));
+  width: min(92vw, 460px, calc(100dvh - 300px)); aspect-ratio: 1; padding: 8px;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--line); border-radius: 20px;
+}
+.m-board.n6 { gap: 4px; padding: 6px; }
+.m-board.n9 { gap: 3px; padding: 5px; border-radius: 16px; }
+.m-cell {
+  border: 0; padding: 0; border-radius: 12px; background: var(--panel2); display: grid; place-items: center;
+  transition: background 0.15s, transform 0.12s; min-width: 0; min-height: 0; overflow: hidden; position: relative;
+}
+.m-cell svg { position: absolute; left: 15%; top: 15%; }
+.m-board.n6 .m-cell { border-radius: 8px; }
+.m-board.n9 .m-cell { border-radius: 6px; }
+.m-board.mine .m-cell.free { background: #34306b; cursor: pointer; }
+.m-board.mine .m-cell.free:active { transform: scale(0.92); background: #3f3a80; }
+.m-cell svg { width: 70%; height: 70%; overflow: visible; }
+.m-cell svg * { fill: none; stroke-width: 13; stroke-linecap: round; }
+.m-cell.X svg * { stroke: var(--xc); filter: drop-shadow(0 0 6px rgba(255,92,138,0.45)); }
+.m-cell.O svg * { stroke: var(--oc); filter: drop-shadow(0 0 6px rgba(73,182,255,0.45)); }
+.m-cell.fresh svg * { stroke-dasharray: 100; animation: drawMark 0.35s ease-out both; }
+.m-cell.last { box-shadow: inset 0 0 0 2px rgba(255,255,255,0.35); }
+.m-cell.win { background: linear-gradient(135deg, rgba(255,79,139,0.45), rgba(255,182,72,0.45)); animation: pulse 0.9s 3; }
+.m-board.ended .m-cell:not(.win) { opacity: 0.55; }
+@keyframes drawMark { from { stroke-dashoffset: 100; } to { stroke-dashoffset: 0; } }
+.opp[data-mark='X'] .opp-count { color: var(--xc); font-size: 15px; }
+.opp[data-mark='O'] .opp-count { color: var(--oc); font-size: 15px; }
+.mk-X { color: var(--xc); -webkit-text-fill-color: var(--xc); font-weight: 700; }
+.mk-O { color: var(--oc); -webkit-text-fill-color: var(--oc); font-weight: 700; }
+
+/* choix de la grille (salon) */
+.m-options { display: flex; flex-direction: column; gap: 10px; }
+.seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.seg button {
+  border: 1.5px solid var(--line); background: var(--panel2); border-radius: 14px; padding: 10px 6px;
+  font-weight: 700; font-size: 18px; display: flex; flex-direction: column; align-items: center; gap: 2px;
+}
+.seg button small { font-size: 11px; font-weight: 500; color: var(--muted); }
+.seg button.sel { border-color: var(--oc); background: rgba(73,182,255,0.16); }
+.seg button:disabled { opacity: 1; cursor: default; }
+.seg button:disabled:not(.sel) { opacity: 0.45; }
+
 /* ---------- pénalité +2 / +4 cumulée ---------- */
 .pending-badge {
   position: absolute; z-index: 3; left: 50%; bottom: 34px; transform: translateX(-50%);

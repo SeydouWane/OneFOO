@@ -147,6 +147,39 @@ async function autoMove(c) {
   assert.ok(!after.ok, 'salon supprimé quand il est vide');
   console.log('✔ API : revanche, réactions, départ, suppression du salon');
 
+  // ---------- 3b. Morpion entre amis via l'API
+  {
+    const a = client('Ibou');
+    const b = client('Awa');
+    const c = await a.post('create', { game: 'morpion' });
+    assert.ok(c.ok && c.state.kind === 'morpion' && c.state.maxPlayers === 2, 'salon de morpion créé');
+    assert.ok((await b.post('join', { code: c.state.code })).ok);
+    assert.ok(!(await client('C').post('join', { code: c.state.code })).ok, 'morpion : 2 joueurs max');
+    assert.ok((await a.post('options', { size: 6 })).ok, 'grille choisie par l’hôte');
+    assert.ok((await a.post('start')).ok);
+    await b.poll();
+    assert.strictEqual(b.state.game.size, 6);
+    let turns = 0;
+    while (a.state.status === 'playing' && turns++ < 80) {
+      for (const p of [a, b]) {
+        await p.poll();
+        const g = p.state.game;
+        if (g.status === 'playing' && g.turnPlayerId === p.state.me) {
+          const free = g.board.map((x, i) => (x === null ? i : -1)).filter((i) => i >= 0);
+          const r = await p.post('move', { cell: free[Math.floor(Math.random() * free.length)] });
+          assert.ok(r.ok, 'move: ' + r.error);
+        }
+      }
+    }
+    await a.poll();
+    assert.strictEqual(a.state.status, 'ended', 'partie de morpion terminée');
+    const occupied = await a.post('move', { cell: 0 });
+    assert.ok(!occupied.ok, 'plus de coups après la fin');
+    await a.post('leave');
+    await b.post('leave');
+    console.log(`✔ API morpion : partie 6×6 terminée (${a.state.game.isDraw ? 'nul' : 'gagnant : ' + a.state.game.players.find((p) => p.id === a.state.game.winnerId).name})`);
+  }
+
   // ---------- 4. Adaptateur Upstash (faux serveur REST)
   const db = new Map();
   const calls = [];

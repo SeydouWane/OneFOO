@@ -11,6 +11,11 @@ Quand un joueur termine, les autres continuent pour les places suivantes (🥇 �
 s'il ne reste que des bots en jeu, la manche s'arrête et ils sont classés selon leurs cartes restantes.
 Contre le système, seule la 1re place fait monter le système de niveau.
 
+Deuxième jeu : **Morpion** (2 joueurs, ✕ contre ◯). Contre le système, la grille grandit avec le niveau :
+3×3 (niveaux 1 à 4), 6×6 en alignant 4 (niveaux 5 à 8), 9×9 en alignant 5 (niveau 9 et plus). Le système
+commet de moins en moins d'erreurs, repère les doubles menaces aux niveaux élevés et commence la partie aux niveaux 7-8 et 12+.
+Entre amis, l'hôte choisit la grille et on alterne qui commence à chaque revanche. Un match nul ne change pas le niveau.
+
 ## Fonctionnalités
 
 - **Contre le système** : à chaque victoire, le système monte d'un niveau (Débutant → Apprenti → Joueur → Confirmé → Expert → Maître → Légende).
@@ -33,11 +38,15 @@ Contre le système, seule la 1re place fait monter le système de niveau.
 
 ```
 public/                    site statique (HTML/CSS/JS, sans étape de build)
-public/js/foo/engine.js    règles du jeu FOO!          } partagés navigateur + serveur
-public/js/foo/bot.js       IA du système et niveaux    }
-public/js/foo/rooms.js     logique des salons          }
+public/js/core/rooms-core.js  socle commun des salons (joueurs, présence, bots, micro, répliques)  } partagés
+public/js/foo/engine.js    FOO! : règles                                                       } navigateur
+public/js/foo/bot.js       FOO! : IA du système et niveaux                                     } + serveur
+public/js/foo/rooms.js     FOO! : salons                                                       }
+public/js/morpion/engine.js  Morpion : règles et IA (minimax en 3×3, heuristique sinon)        }
+public/js/morpion/rooms.js   Morpion : salons                                                  }
 api/room.js                fonction Vercel /api/room (mode entre amis)
 src/api.js                 API : créer / rejoindre / jouer / rafraîchir
+src/games.js               registre des jeux (type de salon -> logique du jeu)
 src/store.js               stockage des salons : Upstash Redis (Vercel) ou mémoire (local)
 local-server.js            serveur de développement local (reproduit Vercel)
 tests/                     tests automatisés
@@ -101,5 +110,8 @@ de parties par mois.
 
 ## Ajouter un jeu
 
-Créez `public/js/<jeu>/` (moteur, bot, salons) sur le modèle de `foo/`, ajoutez sa route d'API, puis remplacez la tuile
-« Bientôt » correspondante dans `public/index.html`.
+1. Créez `public/js/<jeu>/engine.js` (règles + IA) et `public/js/<jeu>/rooms.js` sur le modèle de `morpion/` :
+   le socle `core/rooms-core.js` gère déjà joueurs, salon, présence, bots, réactions, micro et répliques.
+2. Ajoutez-le au registre `src/games.js` et aux scripts de `public/index.html`.
+3. Côté client (`public/js/app.js`) : ajoutez-le à `ROOMS` / `GAME_NAMES`, son affichage dans `renderGame`
+   et son écran de fin, puis activez sa tuile sur l'accueil.

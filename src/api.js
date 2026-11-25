@@ -3,7 +3,8 @@
  * API du mode "entre amis" : une seule route /api/room.
  *  - GET  /api/room?code=ABCDE&v=12  -> état du salon (ou { same: true } si rien n'a changé depuis la version v)
  *  - POST /api/room { action, code?, ... } -> create | join | leave | start | addBot | removeBot | lobby
- *                                             | profile | emote | play | draw | pass | foo | catch
+ *                                             | profile | emote | play | draw | pass | foo | catch (FOO!)
+ *                                             | options | move (Morpion) ; create { game: 'foo' | 'morpion' }
  *                                             | voice (micro on/off) | signal (mise en relation audio)
  *  - GET  /api/room?ice=1                    -> serveurs STUN/TURN pour l'audio entre téléphones
  *  - GET  /api/room?...&sig=1                -> en plus, les messages audio en attente pour ce joueur
@@ -11,8 +12,8 @@
  * des autres joueurs en est dérivé (hachage). Un joueur ne peut donc pas agir à la place d'un autre.
  */
 const crypto = require('crypto');
-const { GameError } = require('../public/js/foo/engine.js');
-const Rooms = require('../public/js/foo/rooms.js');
+const { GameError } = require('../public/js/core/rooms-core.js');
+const { GAMES, roomsFor } = require('./games');
 const { createStore } = require('./store');
 
 const SECRET_RE = /^[a-f0-9]{24,64}$/i;
@@ -95,16 +96,16 @@ async function poll(st, code, pid, v, now) {
       let changed = false;
       const p = r.players.find((x) => x.id === pid);
       if (p && now - (p.lastSeen || 0) > PRESENCE_MS) {
-        Rooms.touch(r, pid, now);
+        roomsFor(r).touch(r, pid, now);
         changed = true;
       }
-      if (Rooms.advance(r, now)) changed = true;
+      if (roomsFor(r).advance(r, now)) changed = true;
       return changed ? null : { noWrite: true };
     },
     loaded
   );
   if (room.version === v) return { ok: true, same: true, serverNow: now };
-  return { ok: true, state: Rooms.view(room, pid, now) };
+  return { ok: true, state: roomsFor(room).view(room, pid, now) };
 }
 
 async function action(st, pid, body, now) {
@@ -113,9 +114,10 @@ async function action(st, pid, body, now) {
 
   if (a === 'create') {
     for (let i = 0; i < 8; i++) {
-      const room = Rooms.newRoom(newCode(), 'friends', who, now);
+      const kind = GAMES[body.game] ? body.game : 'foo';
+      const room = roomsFor(kind).newRoom(newCode(), 'friends', who, now, { size: body.size });
       room.version = 1;
-      if (await st.save(room, 0)) return { ok: true, state: Rooms.view(room, pid, now) };
+      if (await st.save(room, 0)) return { ok: true, state: roomsFor(room).view(room, pid, now) };
     }
     throw new GameError('Impossible de créer le salon, réessayez.');
   }
@@ -127,17 +129,17 @@ async function action(st, pid, body, now) {
 
   if (a === 'join') {
     const { room } = await mutate(st, code, (r) => {
-      Rooms.join(r, who, now);
-      Rooms.advance(r, now);
+      roomsFor(r).join(r, who, now);
+      roomsFor(r).advance(r, now);
     });
-    return { ok: true, state: Rooms.view(room, pid, now) };
+    return { ok: true, state: roomsFor(room).view(room, pid, now) };
   }
 
   if (a === 'leave') {
     try {
       const { out } = await mutate(st, code, (r) => {
-        const empty = Rooms.leave(r, pid);
-        if (!empty) Rooms.advance(r, now);
+        const empty = roomsFor(r).leave(r, pid);
+        if (!empty) roomsFor(r).advance(r, now);
         return { empty };
       });
       if (out.empty) await st.remove(code);
@@ -148,11 +150,11 @@ async function action(st, pid, body, now) {
   }
 
   const { room, out } = await mutate(st, code, (r) => {
-    const res = Rooms.act(r, pid, a, body, now);
-    Rooms.advance(r, now);
+    const res = roomsFor(r).act(r, pid, a, body, now);
+    roomsFor(r).advance(r, now);
     return { res };
   });
-  return { ok: true, ...(out.res || {}), state: Rooms.view(room, pid, now) };
+  return { ok: true, ...(out.res || {}), state: roomsFor(room).view(room, pid, now) };
 }
 
 async function readBody(req) {
