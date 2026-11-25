@@ -4,6 +4,7 @@ Application web (responsive, pensée pour le téléphone) pour jouer en ligne **
 
 Premier jeu : **FOO!**, un jeu de cartes de couleurs (même couleur ou même valeur, +2, Joker +4, Passe, Inverse…).
 On annonce « FOO! » quand il ne reste qu'une carte, sinon un adversaire peut vous attraper (+2 cartes).
+Plusieurs cartes du même chiffre (couleurs différentes) se posent ensemble ; la dernière posée donne la couleur.
 
 ## Fonctionnalités
 
@@ -11,9 +12,16 @@ On annonce « FOO! » quand il ne reste qu'une carte, sinon un adversaire peut v
   Plus le niveau est haut, plus il y a d'adversaires IA (1 → 3), plus ils jouent finement et plus ils vous attrapent si vous oubliez FOO!.
   Ce mode tourne entièrement dans le navigateur : instantané, et la partie reprend après un rechargement de page.
   Le niveau et les statistiques sont enregistrés sur l'appareil (pas de compte nécessaire).
+- **Le système est taquin** : les bots chambrent le joueur (« Je vais pas te ménager aujourd'hui ! », « T'as pas pris de
+  déjeuner aujourd'hui ou quoi ? », « Je te gagne ! On rejoue ? »…) dans une bulle, et à voix haute grâce à la synthèse
+  vocale du téléphone (une voix par bot). Les répliques dépendent de la partie (début, +2 / +4, pioche, FOO!, attrape,
+  lenteur, victoire, défaite) et sont espacées pour rester naturelles. Le bouton 🔊 coupe tout le son.
 - **Entre amis** : créez un salon, partagez le **code à 5 caractères**, le **lien** (`/r/CODE`) ou envoyez-le par **WhatsApp**.
   2 à 6 joueurs, bots optionnels, 30 s par tour, revanche, score du salon, réactions emoji.
   Un joueur qui quitte en cours de manche est remplacé par un bot.
+- **Micro entre amis** (🎙️) : la voix passe directement de téléphone à téléphone (WebRTC), le serveur ne fait que
+  mettre les joueurs en relation. L'avatar de celui qui parle s'allume en vert.
+- **Main lisible** : ⤢ étale les cartes sur plusieurs lignes, 🎨 / 🔢 les trie par couleur ou par chiffre.
 - Installable sur l'écran d'accueil du téléphone (manifeste web).
 
 ## Architecture (compatible Vercel)
@@ -60,6 +68,18 @@ Tests : `npm test` (moteur de jeu, salons, API HTTP de bout en bout, adaptateur 
 
 Sans base Redis, le mode contre le système fonctionne déjà ; le mode entre amis affiche un message explicatif.
 
+### Micro sur réseau mobile (optionnel)
+
+Le micro utilise des serveurs STUN publics, ce qui suffit sur la plupart des Wi-Fi. Certains réseaux mobiles bloquent la
+connexion directe entre deux téléphones : dans ce cas, ajoutez un serveur **TURN** (par exemple l'offre gratuite de
+Metered « Open Relay » ou Cloudflare Realtime TURN) avec ces variables d'environnement dans Vercel, puis redéployez :
+
+```
+TURN_URLS=turn:exemple.relay.com:80,turn:exemple.relay.com:443?transport=tcp
+TURN_USERNAME=...
+TURN_CREDENTIAL=...
+```
+
 Ordre de grandeur des quotas gratuits : une partie de 10 min à 4 humains représente environ 2 000 requêtes à Redis
 et autant d'appels de fonction. L'offre gratuite d'Upstash et l'offre Hobby de Vercel suffisent donc pour quelques centaines
 de parties par mois.
@@ -69,6 +89,9 @@ de parties par mois.
 - Le niveau du système est stocké dans le navigateur. Changer de téléphone ou vider les données remet le niveau à 1.
   Des comptes joueurs pourraient être ajoutés plus tard.
 - Entre amis, les actions des autres joueurs apparaissent avec ~1 s de décalage (rafraîchissement régulier, pas de temps réel pur).
+- La voix du système dépend des voix françaises installées sur le téléphone (plus naturelle sur les téléphones récents).
+- Le micro nécessite https (fonctionne sur le site en ligne, pas via `http://192.168.x.x` en local) ; jusqu'à 6 joueurs
+  connectés deux à deux.
 - Un salon inactif est supprimé de la base au bout de 2 h.
 
 ## Ajouter un jeu

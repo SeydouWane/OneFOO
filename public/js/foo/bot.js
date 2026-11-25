@@ -62,8 +62,8 @@
   }
 
   /**
-   * Choisit la carte à jouer, ou null s'il faut piocher.
-   * @returns {{cardId:string,color?:string}|null}
+   * Choisit la (ou les) carte(s) à jouer, ou null s'il faut piocher.
+   * @returns {{cardIds:string[],color?:string}|null}
    */
   function chooseMove(game, botId, skill, rng = Math.random) {
     const allowed = new Set(game.playableIds(botId));
@@ -113,7 +113,17 @@
       }
     }
 
-    const move = { cardId: pick.id };
+    const move = { cardIds: [pick.id] };
+    // Doublons du même chiffre : on les pose ensemble, en finissant par la couleur la plus fournie.
+    if (Engine.isNumber(pick) && !game.hasDrawn && rng() < 0.35 + 0.65 * skill) {
+      const twins = me.hand.filter((c) => c.id !== pick.id && c.value === pick.value);
+      if (twins.length) {
+        const rest = me.hand.filter((c) => c.id !== pick.id && !twins.includes(c));
+        const counts = colorCounts(rest);
+        twins.sort((a, b) => counts[a.color] - counts[b.color]);
+        move.cardIds.push(...twins.map((c) => c.id));
+      }
+    }
     if (pick.color === 'wild') {
       const rest = me.hand.filter((c) => c.id !== pick.id);
       move.color = chooseColor(rest, skill, rng);
@@ -129,8 +139,9 @@
     const me = game.player(botId);
     const move = chooseMove(game, botId, prof.skill, rng);
     if (move) {
-      if (me.hand.length === 2 && rng() < prof.fooChance) game.sayFoo(botId);
-      game.play(botId, move.cardId, move.color);
+      const left = me.hand.length - move.cardIds.length;
+      if (left === 1 && !me.saidFoo && rng() < prof.fooChance && game.canSayFoo(botId)) game.sayFoo(botId);
+      game.play(botId, move.cardIds, move.color);
       return { action: 'play', move };
     }
     if (!game.hasDrawn) {

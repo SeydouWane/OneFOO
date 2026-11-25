@@ -145,6 +145,8 @@
         <h2 class="section-title">Joueurs <span id="lobbyCount"></span></h2>
         <ul class="player-list" id="lobbyPlayers"></ul>
 
+        <button class="btn secondary mic-wide" id="lobbyMicBtn">🎙️ Activer le micro pour parler aux amis</button>
+
         <div class="lobby-actions" id="hostActions">
           <button class="btn secondary" id="addBotBtn">＋ Ajouter un bot</button>
           <button class="btn primary big" id="startBtn">Lancer la partie</button>
@@ -160,9 +162,11 @@
         <header class="game-top">
           <button class="icon-btn" id="gameLeave" aria-label="Quitter la partie">✕</button>
           <div class="game-info" id="gameInfo"></div>
-          <button class="icon-btn" id="soundBtn" aria-label="Son">🔊</button>
+          <button class="icon-btn mic-btn hidden" id="micBtn" aria-label="Activer le micro">🎙️</button>
+          <button class="icon-btn" id="soundBtn" aria-label="Son et voix">🔊</button>
           <button class="icon-btn" id="emoteBtn" aria-label="Réactions">😀</button>
         </header>
+        <div class="speech" id="speech" aria-live="polite"><b id="speechWho"></b><span id="speechText"></span><i class="tail" id="speechTail"></i></div>
 
         <div class="opponents" id="opponents"></div>
 
@@ -189,9 +193,15 @@
         </div>
 
         <div class="actions">
-          <button class="btn catch hidden" id="catchBtn">Attraper !</button>
-          <button class="btn foo" id="fooBtn">FOO!</button>
-          <button class="btn secondary hidden" id="passBtn">Passer</button>
+          <button class="tool" id="sortBtn" aria-label="Trier les cartes">🎨</button>
+          <div class="actions-mid">
+            <button class="btn catch hidden" id="catchBtn">Attraper !</button>
+            <button class="btn foo" id="fooBtn">FOO!</button>
+            <button class="btn primary hidden" id="playSelBtn">Poser</button>
+            <button class="btn secondary hidden" id="cancelSelBtn" aria-label="Annuler la sélection">✕</button>
+            <button class="btn secondary hidden" id="passBtn">Passer</button>
+          </div>
+          <button class="tool" id="expandBtn" aria-label="Étaler les cartes">⤢</button>
         </div>
 
         <div class="hand-wrap" id="handWrap">
@@ -251,15 +261,17 @@
       <ul>
         <li><b>But :</b> être le premier à poser toutes ses cartes.</li>
         <li>Posez une carte de <b>même couleur</b> ou de <b>même valeur</b> que la carte du dessus.</li>
+        <li><b>Plusieurs cartes du même chiffre</b> (ex. deux 7 de couleurs différentes) se posent ensemble : touchez la première, puis les autres, puis « Poser ». La dernière choisie donne la couleur.</li>
         <li>Vous ne pouvez pas jouer ? Touchez la <b>pioche</b>. Si la carte piochée est jouable, posez-la ou passez.</li>
         <li><b>⊘ Passe</b> : le joueur suivant saute son tour.</li>
         <li><b>⇄ Inverse</b> : le sens du jeu change (à 2 joueurs, vous rejouez).</li>
         <li><b>+2</b> : le suivant pioche 2 cartes et passe son tour.</li>
         <li><b>Joker</b> : se pose sur tout, vous choisissez la couleur.</li>
         <li><b>Joker +4</b> : idem, et le suivant pioche 4 cartes et passe son tour.</li>
-        <li>Quand il vous reste 2 cartes, touchez <b>FOO!</b> avant de poser l'avant-dernière. Si vous oubliez, un adversaire peut vous <b>attraper</b> : +2 cartes !</li>
-        <li><b>Contre le système :</b> chaque victoire fait monter le système d'un niveau. Plus il monte, plus il a d'adversaires et plus il est malin et attentif.</li>
-        <li><b>Entre amis :</b> 30 secondes par tour, sinon le jeu pioche pour vous.</li>
+        <li>Quand il ne va plus vous rester qu'une carte, touchez <b>FOO!</b> avant de poser. Si vous oubliez, un adversaire peut vous <b>attraper</b> : +2 cartes !</li>
+        <li><b>Contre le système :</b> chaque victoire fait monter le système d'un niveau. Plus il monte, plus il a d'adversaires et plus il est malin et attentif. Et il parle beaucoup… (🔊 pour couper le son).</li>
+        <li><b>Entre amis :</b> 30 secondes par tour, sinon le jeu pioche pour vous. Touchez <b>🎙️</b> pour parler à vos amis.</li>
+        <li>Beaucoup de cartes ? <b>⤢</b> les étale sur plusieurs lignes, <b>🎨 / 🔢</b> les trie par couleur ou par chiffre.</li>
       </ul>
       <button class="btn primary" data-close>J'ai compris</button>
     </div>

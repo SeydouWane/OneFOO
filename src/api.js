@@ -4,6 +4,9 @@
  *  - GET  /api/room?code=ABCDE&v=12  -> état du salon (ou { same: true } si rien n'a changé depuis la version v)
  *  - POST /api/room { action, code?, ... } -> create | join | leave | start | addBot | removeBot | lobby
  *                                             | profile | emote | play | draw | pass | foo | catch
+ *                                             | voice (micro on/off) | signal (mise en relation audio)
+ *  - GET  /api/room?ice=1                    -> serveurs STUN/TURN pour l'audio entre téléphones
+ *  - GET  /api/room?...&sig=1                -> en plus, les messages audio en attente pour ce joueur
  * Le client s'identifie avec une clé secrète (en-tête X-OneFOO-Key) ; l'identifiant public visible
  * des autres joueurs en est dérivé (hachage). Un joueur ne peut donc pas agir à la place d'un autre.
  */
@@ -23,6 +26,36 @@ const setStore = (s) => (store = s); // tests
 const publicId = (secret) => 'p' + crypto.createHash('sha256').update('onefoo:' + secret.toLowerCase()).digest('hex').slice(0, 16);
 const normCode = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Serveurs pour établir l'audio entre téléphones. STUN suffit le plus souvent ; un serveur TURN
+ * (variables TURN_URLS, TURN_USERNAME, TURN_CREDENTIAL) aide quand un réseau mobile bloque la connexion directe.
+ */
+function iceServers(env = process.env) {
+  const list = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+  if (env.TURN_URLS && env.TURN_USERNAME && env.TURN_CREDENTIAL) {
+    list.push({
+      urls: env.TURN_URLS.split(',').map((s) => s.trim()).filter(Boolean),
+      username: env.TURN_USERNAME,
+      credential: env.TURN_CREDENTIAL,
+    });
+  }
+  return list;
+}
+
+async function signal(st, code, pid, body) {
+  const room = await st.load(code);
+  if (!room) throw new GameError('Aucune partie avec ce code.');
+  const me = room.players.find((p) => p.id === pid && !p.isBot);
+  const to = room.players.find((p) => p.id === body.to && !p.isBot);
+  if (!me || !to || to.id === pid) throw new GameError('Destinataire invalide.');
+  const d = body.data || {};
+  const okType = ['offer', 'answer', 'bye'].includes(d.type);
+  const okSdp = d.sdp == null || (typeof d.sdp === 'string' && d.sdp.length <= 20000);
+  if (!okType || !okSdp || String(d.session || '').length > 40) throw new GameError('Signal invalide.');
+  await st.pushSignal(code, to.id, { from: pid, type: d.type, sdp: d.sdp || null, session: String(d.session || '') });
+  return { ok: true };
+}
 
 function newCode() {
   const bytes = crypto.randomBytes(5);
@@ -90,6 +123,8 @@ async function action(st, pid, body, now) {
   const code = normCode(body.code);
   if (!code) throw new GameError('Code de partie manquant.');
 
+  if (a === 'signal') return signal(st, code, pid, body);
+
   if (a === 'join') {
     const { room } = await mutate(st, code, (r) => {
       Rooms.join(r, who, now);
@@ -126,7 +161,7 @@ async function readBody(req) {
   let raw = '';
   for await (const chunk of req) {
     raw += chunk;
-    if (raw.length > 16384) throw new GameError('Requête trop volumineuse.');
+    if (raw.length > 32768) throw new GameError('Requête trop volumineuse.');
   }
   return raw ? JSON.parse(raw) : {};
 }
@@ -153,7 +188,14 @@ async function handler(req, res) {
 
     if (req.method === 'GET') {
       const q = req.query || Object.fromEntries(new URL(req.url, 'http://localhost').searchParams);
-      return send(200, await poll(st, normCode(q.code), pid, Number(q.v) || 0, now));
+      if (q.ice) return send(200, { ok: true, iceServers: iceServers() });
+      const code = normCode(q.code);
+      const out = await poll(st, code, pid, Number(q.v) || 0, now);
+      if (q.sig === '1' && out.ok && !out.gone) {
+        const signals = await st.takeSignals(code, pid);
+        if (signals.length) out.signals = signals;
+      }
+      return send(200, out);
     }
     if (req.method === 'POST') {
       let body;
@@ -176,3 +218,4 @@ async function handler(req, res) {
 module.exports = handler;
 module.exports.publicId = publicId;
 module.exports.setStore = setStore;
+module.exports.iceServers = iceServers;

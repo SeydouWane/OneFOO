@@ -9,7 +9,7 @@ delete process.env.UPSTASH_REDIS_REST_URL;
 const assert = require('assert');
 const crypto = require('crypto');
 const { server } = require('../local-server');
-const { UpstashStore, CAS_SCRIPT, createStore } = require('../src/store');
+const { UpstashStore, CAS_SCRIPT, SIG_PUSH_SCRIPT, SIG_TAKE_SCRIPT, createStore } = require('../src/store');
 const Rooms = require('../public/js/foo/rooms.js');
 
 const BASE = `http://localhost:${process.env.PORT}/api/room`;
@@ -115,6 +115,23 @@ async function autoMove(c) {
   assert.strictEqual(ended.players.reduce((n, p) => n + p.wins, 0), 1, 'score du salon');
   console.log(`✔ API amis : manche terminée en ${((Date.now() - t0) / 1000).toFixed(1)} s, gagnant = ${ended.game.players.find((p) => p.id === ended.game.winnerId).name}`);
 
+  // ---------- 2b. Micro : état partagé + relais de mise en relation audio
+  const ice = await (await fetch(`${BASE}?ice=1`, { headers: { 'X-OneFOO-Key': host.secret } })).json();
+  assert.ok(ice.ok && ice.iceServers[0].urls[0].startsWith('stun:'), 'serveurs STUN fournis');
+  assert.ok((await host.post('voice', { on: true })).ok);
+  await friend.poll();
+  assert.ok(friend.state.players.find((p) => p.id === host.state.me).mic, "l'ami voit le micro de l'hôte");
+  const sent = await host.post('signal', { to: friend.state.me, data: { type: 'offer', sdp: 'v=0 fake', session: 's1' } });
+  assert.ok(sent.ok, 'signal envoyé');
+  assert.ok(!(await host.post('signal', { to: 'p0000000000000000', data: { type: 'offer', sdp: 'x' } })).ok, 'destinataire inconnu refusé');
+  assert.ok(!(await host.post('signal', { to: friend.state.me, data: { type: 'evil' } })).ok, 'type de signal refusé');
+  const got = await (await fetch(`${BASE}?code=${code}&v=0&sig=1`, { headers: { 'X-OneFOO-Key': friend.secret } })).json();
+  assert.deepStrictEqual(got.signals, [{ from: host.state.me, type: 'offer', sdp: 'v=0 fake', session: 's1' }], 'signal reçu');
+  const again = await (await fetch(`${BASE}?code=${code}&v=0&sig=1`, { headers: { 'X-OneFOO-Key': friend.secret } })).json();
+  assert.ok(!again.signals, 'un signal n’est livré qu’une fois');
+  assert.ok((await host.post('voice', { on: false })).ok);
+  console.log('✔ API micro : état partagé, relais audio');
+
   // ---------- 3. Revanche, réaction, départ
   assert.ok((await host.post('start')).ok, 'revanche');
   assert.ok((await friend.post('emote', { emoji: '🔥' })).ok);
@@ -142,6 +159,14 @@ async function autoMove(c) {
     if (args[0] === 'HMGET') {
       const e = db.get(args[1]);
       result = [e ? e.v : null, e ? e.d : null];
+    } else if (args[0] === 'EVAL' && args[1] === SIG_PUSH_SCRIPT) {
+      const list = db.get(args[3]) || [];
+      list.push(args[4]);
+      db.set(args[3], list);
+      result = 1;
+    } else if (args[0] === 'EVAL' && args[1] === SIG_TAKE_SCRIPT) {
+      result = db.get(args[3]) || [];
+      db.delete(args[3]);
     } else if (args[0] === 'EVAL') {
       assert.strictEqual(args[1], CAS_SCRIPT);
       const [, , , key, expected, version, data] = args;
@@ -167,6 +192,10 @@ async function autoMove(c) {
   assert.deepStrictEqual(loaded.game.viewFor('pA').hand, r.game.viewFor('pA').hand);
   await st.remove('UPSTH');
   assert.strictEqual(await st.load('UPSTH'), null);
+  await st.pushSignal('UPSTH', 'pB', { from: 'pA', type: 'offer', sdp: 'x', session: '1' });
+  await st.pushSignal('UPSTH', 'pB', { from: 'pA', type: 'bye', sdp: null, session: '1' });
+  assert.deepStrictEqual((await st.takeSignals('UPSTH', 'pB')).map((s) => s.type), ['offer', 'bye'], 'file de signaux Upstash');
+  assert.deepStrictEqual(await st.takeSignals('UPSTH', 'pB'), []);
   assert.deepStrictEqual([...new Set(calls)].sort(), ['DEL', 'EVAL', 'HMGET']);
   assert.ok(createStore({ KV_REST_API_URL: 'https://x', KV_REST_API_TOKEN: 't' }) instanceof UpstashStore, 'variables Vercel KV reconnues');
   assert.strictEqual(createStore({ VERCEL: '1' }), null, 'sur Vercel sans base : mode amis désactivé');

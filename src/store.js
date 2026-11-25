@@ -22,6 +22,13 @@ const CAS_SCRIPT = [
   'return 1',
 ].join('\n');
 
+// Messages de mise en relation audio (WebRTC) : une petite file par destinataire, qui expire vite.
+const SIG_PREFIX = 'onefoo:sig:';
+const SIG_TTL_SECONDS = 90;
+const SIG_PUSH_SCRIPT = ["redis.call('RPUSH', KEYS[1], ARGV[1])", "redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))", 'return 1'].join('\n');
+const SIG_TAKE_SCRIPT = ["local v = redis.call('LRANGE', KEYS[1], 0, -1)", "redis.call('DEL', KEYS[1])", 'return v'].join('\n');
+const sigKey = (code, to) => `${SIG_PREFIX}${code}:${to}`;
+
 const serialize = (room) => JSON.stringify(room);
 function deserialize(v, d) {
   const room = Rooms.parse(d);
@@ -32,7 +39,20 @@ function deserialize(v, d) {
 class MemoryStore {
   constructor() {
     this.map = new Map();
+    this.sig = new Map();
     this.kind = 'memory';
+  }
+  async pushSignal(code, to, msg) {
+    const key = sigKey(code, to);
+    const list = (this.sig.get(key) || []).filter((e) => e.exp >= Date.now());
+    list.push({ msg: JSON.stringify(msg), exp: Date.now() + SIG_TTL_SECONDS * 1000 });
+    this.sig.set(key, list);
+  }
+  async takeSignals(code, to) {
+    const key = sigKey(code, to);
+    const list = (this.sig.get(key) || []).filter((e) => e.exp >= Date.now());
+    this.sig.delete(key);
+    return list.map((e) => JSON.parse(e.msg));
   }
   async load(code) {
     const e = this.map.get(code);
@@ -83,6 +103,13 @@ class UpstashStore {
   async remove(code) {
     await this.cmd(['DEL', PREFIX + code]);
   }
+  async pushSignal(code, to, msg) {
+    await this.cmd(['EVAL', SIG_PUSH_SCRIPT, '1', sigKey(code, to), JSON.stringify(msg), String(SIG_TTL_SECONDS)]);
+  }
+  async takeSignals(code, to) {
+    const list = (await this.cmd(['EVAL', SIG_TAKE_SCRIPT, '1', sigKey(code, to)])) || [];
+    return list.map((s) => JSON.parse(s));
+  }
 }
 
 /** Upstash si configuré ; sinon mémoire en local ; null sur Vercel sans base (mode amis indisponible). */
@@ -94,4 +121,4 @@ function createStore(env = process.env) {
   return new MemoryStore();
 }
 
-module.exports = { createStore, MemoryStore, UpstashStore, CAS_SCRIPT, PREFIX, TTL_SECONDS };
+module.exports = { createStore, MemoryStore, UpstashStore, CAS_SCRIPT, SIG_PUSH_SCRIPT, SIG_TAKE_SCRIPT, PREFIX, TTL_SECONDS };

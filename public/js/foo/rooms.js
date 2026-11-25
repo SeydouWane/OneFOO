@@ -26,6 +26,59 @@
   const BOT_NAMES = ['Awa', 'Moussa', 'Fatou', 'Ibou', 'Khady', 'Modou', 'Aïda', 'Cheikh', 'Binta', 'Lamine'];
   const EMOTES = ['👍', '😂', '😮', '😡', '🔥', '😈', '🙏', '👋', '😭', '🎉'];
 
+  // Le système est taquin : répliques selon ce qui se passe ({name} = joueur visé, {level} = niveau).
+  const LINES = {
+    start: [
+      "Je vais pas te ménager aujourd'hui !",
+      'Prépare-toi à perdre, hein !',
+      "Encore toi ? Tu n'as pas eu ta dose la dernière fois ?",
+      'Allez {name}, montre-moi ce que tu sais faire… si tu sais faire quelque chose !',
+      "Aujourd'hui, c'est moi le patron de la table.",
+      'Mélange bien les cartes, ça ne changera rien. Hahaha !',
+    ],
+    startHigh: ['Niveau {level} ? Tu vas souffrir, hahaha !', 'Au niveau {level}, je ne fais plus de cadeaux. Accroche-toi !'],
+    startLow: ["Je débute, mais j'ai l'impression que toi aussi. Hihihi !"],
+    botPenalty: [
+      'Tiens, cadeau ! Hahaha !',
+      'Ramasse, ramasse ! Hahaha !',
+      'Prends ça ! Et sans rancune, hein…',
+      'Désolé… non, en fait je ne suis pas désolé du tout !',
+      "Distribution gratuite aujourd'hui, profite !",
+      '{name}, tu collectionnes les cartes ? Je t’aide !',
+    ],
+    botSkip: ["Assieds-toi, c'est encore mon tour !", 'Tu passes ton tour. Repose-toi un peu !', 'Chut, laisse jouer les grands. Hihihi !'],
+    humanDraw: [
+      "Tu pioches encore ? T'as pas pris de déjeuner aujourd'hui ou quoi ?",
+      'Pioche, pioche… tu vas finir avec tout le paquet !',
+      'Même mon fils fait mieux que ça, hahaha !',
+      'Rien à jouer ? Ça commence mal pour toi, hein !',
+    ],
+    humanPenalty: ['Aïe ! Tu vas me le payer !', "Ah, c'est comme ça ? D'accord, d'accord…", 'Ouh là, enfin tu te réveilles !', 'Pas mal… pour un début.'],
+    humanSkip: ["Hé ! C'était mon tour !", "Coup de chance, c'est tout."],
+    botFoo: ['FOO ! Tu sens la défaite arriver ?', 'Plus qu’une carte… Tu commences à transpirer, {name} ?', "FOO ! Bientôt c'est fini pour toi, hahaha !"],
+    humanFoo: ['Hein ?! Attends, attends… pas si vite !', 'Une seule carte ? Je vais te faire piocher, tu vas voir.', 'Tu crois que tu vas gagner ? Hahaha… bon, peut-être.'],
+    botCatch: ['Attrapé ! Tu as oublié de dire FOO, hahaha !', 'Et hop, deux cartes pour toi ! Il faut parler, hein !', "T'es nul ! Même mon fils dit FOO, lui !"],
+    humanCatch: ["Ah zut ! Tu m'as eu…", "Bien vu… je l'avoue."],
+    humanMany: ['Tu as combien de cartes, là ? On dirait un éventail !', 'Tu joues aux cartes ou tu vends des cartes ? Hahaha !'],
+    humanIdle: ['Allô ? Tu dors ou quoi ?', 'Tu réfléchis ou tu fais la sieste ?', 'Prends ton temps… non je rigole, joue !'],
+    botMulti: ["Et paf, plusieurs d'un coup !", "Double ! Tu ne l'as pas vu venir, hein ?"],
+    humanMulti: ["Oh, tout d'un coup ! D'accord, je note…", 'Hé, doucement avec tes doubles !'],
+    botWin: [
+      'Je te gagne ! On rejoue ? Hahaha !',
+      'Trop facile ! Reviens quand tu auras révisé.',
+      'Gagné ! Va prendre ton déjeuner et reviens, hahaha !',
+      'T’es nul, même mon fils fait mieux ! Allez, on rejoue ?',
+    ],
+    humanWin: [
+      "Quoi ?! Coup de chance, c'est tout !",
+      'Bon… tu as gagné cette fois. La prochaine, tu vas voir !',
+      "D'accord, bien joué. Mais je monte de niveau et je reviens !",
+      'Revanche ! Je demande la revanche !',
+    ],
+  };
+  const SAY_GAP_MS = 3500; // délai minimum entre deux répliques (sauf moments forts)
+  const IDLE_TEASE_MS = 15000; // un humain qui traîne se fait chambrer
+
   const pick = (arr, rng = Math.random) => arr[Math.floor(rng() * arr.length)];
   const sanitizeName = (n) =>
     String(n || '')
@@ -60,6 +113,9 @@
       noticeSeq: 0,
       emotes: [],
       emoteSeq: 0,
+      says: [],
+      saySeq: 0,
+      voice: {},
       timerKey: null,
       dueAt: null,
       turnDeadline: null,
@@ -141,6 +197,7 @@
 
   /** @returns {boolean} true si le salon est désormais vide (à supprimer) */
   function leave(room, pid) {
+    if (room.voice) delete room.voice[pid];
     const idx = room.players.findIndex((p) => p.id === pid);
     if (idx === -1) return humans(room).length === 0;
     const p = room.players[idx];
@@ -218,8 +275,16 @@
         p.lastEmote = now;
         emote(room, pid, data.emoji, now);
         return;
-      case 'play':
-        needGame().play(pid, String(data.cardId), data.color);
+      case 'play': {
+        const ids = Array.isArray(data.cardIds) ? data.cardIds.slice(0, 10).map(String) : String(data.cardId);
+        needGame().play(pid, ids, data.color);
+        return;
+      }
+      case 'voice':
+        // micro activé / coupé (la voix passe directement entre téléphones, voir le client)
+        room.voice = room.voice || {};
+        if (data.on) room.voice[pid] = now;
+        else delete room.voice[pid];
         return;
       case 'draw':
         return { playable: needGame().draw(pid).playable };
@@ -266,6 +331,123 @@
     }
   }
 
+  // ------------------------------------------------------------------ le système taquin
+  const fill = (text, vars) => text.replace(/\{(\w+)\}/g, (_, k) => (vars[k] != null ? vars[k] : ''));
+
+  function sayLine(room, speakerId, key, vars, now, rng) {
+    const pool = (LINES[key] || []).filter((l) => !l.includes('{name}') || vars.name);
+    if (!pool.length) return false;
+    room.recentLines = room.recentLines || [];
+    const fresh = pool.filter((l) => !room.recentLines.includes(l));
+    const line = pick(fresh.length ? fresh : pool, rng);
+    room.recentLines.push(line);
+    if (room.recentLines.length > 12) room.recentLines.shift();
+    room.says = room.says || [];
+    room.saySeq = (room.saySeq || 0) + 1;
+    room.says.push({ seq: room.saySeq, playerId: speakerId, text: fill(line, vars), at: now });
+    if (room.says.length > 6) room.says.shift();
+    room.lastSayAt = now;
+    return true;
+  }
+
+  /** Les bots réagissent aux derniers événements de la partie (une réplique à la fois). */
+  function banter(room, now, rng) {
+    const g = room.game;
+    if (!g) return false;
+    const speakers = room.players.filter((p) => p.isBot && !p.replaced && g.player(p.id));
+    if (!speakers.length) return false;
+    let changed = false;
+    if (room.banterGame !== g.id) {
+      room.banterGame = g.id;
+      room.banterSeq = 0;
+      room.manyTeased = false;
+      changed = true;
+    }
+    const isHuman = (id) => !!id && room.players.some((p) => p.id === id && !p.isBot);
+    const isSpeaker = (id) => !!id && speakers.some((s) => s.id === id);
+    const nameOf = (id) => {
+      const p = player(room, id) || g.player(id);
+      return p ? p.name : '';
+    };
+    const anyBot = () => pick(speakers, rng).id;
+    const firstHuman = (room.players.find((p) => !p.isBot) || {}).id;
+    const cands = [];
+    const add = (key, speaker, target, prio, prob) => {
+      if (rng() < prob) cands.push({ key, speaker, prio, vars: { name: target ? nameOf(target) : '', level: room.level } });
+    };
+
+    const fresh = g.events.filter((e) => e.seq > (room.banterSeq || 0));
+    if (fresh.length) {
+      room.banterSeq = fresh[fresh.length - 1].seq;
+      changed = true;
+      let lastPlayer = null;
+      for (const e of g.events) if (e.seq < fresh[0].seq && e.type === 'play') lastPlayer = e.playerId;
+      for (const e of fresh) {
+        switch (e.type) {
+          case 'start': {
+            let key = 'start';
+            if (room.mode === 'solo' && room.level >= 9 && rng() < 0.5) key = 'startHigh';
+            else if (room.mode === 'solo' && room.level <= 1 && rng() < 0.4) key = 'startLow';
+            add(key, anyBot(), firstHuman, 3, 1);
+            break;
+          }
+          case 'play':
+            lastPlayer = e.playerId;
+            if (e.cards && isSpeaker(e.playerId)) add('botMulti', e.playerId, null, 1, 0.7);
+            else if (e.cards && isHuman(e.playerId)) add('humanMulti', anyBot(), e.playerId, 1, 0.6);
+            break;
+          case 'penalty':
+            if (isSpeaker(e.by) && isHuman(e.playerId)) add('botPenalty', e.by, e.playerId, 2, 0.85);
+            else if (isHuman(e.by) && isSpeaker(e.playerId)) add('humanPenalty', e.playerId, e.by, 2, 0.75);
+            break;
+          case 'skip':
+            if (isSpeaker(lastPlayer) && isHuman(e.playerId)) add('botSkip', lastPlayer, e.playerId, 1, 0.6);
+            else if (isHuman(lastPlayer) && isSpeaker(e.playerId)) add('humanSkip', e.playerId, lastPlayer, 1, 0.55);
+            break;
+          case 'draw':
+            if (isHuman(e.playerId)) add('humanDraw', anyBot(), e.playerId, 0, 0.3);
+            break;
+          case 'foo':
+            if (isSpeaker(e.playerId)) add('botFoo', e.playerId, firstHuman, 2, 0.85);
+            else if (isHuman(e.playerId)) add('humanFoo', anyBot(), e.playerId, 2, 0.65);
+            break;
+          case 'caught':
+            if (isSpeaker(e.by) && isHuman(e.playerId)) add('botCatch', e.by, e.playerId, 3, 1);
+            else if (isHuman(e.by) && isSpeaker(e.playerId)) add('humanCatch', e.playerId, e.by, 3, 0.9);
+            break;
+          case 'win':
+            if (isSpeaker(e.playerId)) add('botWin', e.playerId, firstHuman, 4, 1);
+            else if (isHuman(e.playerId)) add('humanWin', anyBot(), e.playerId, 4, 1);
+            break;
+        }
+      }
+      if (!room.manyTeased && g.status === 'playing') {
+        const heavy = g.players.find((p) => isHuman(p.id) && p.hand.length >= 10);
+        if (heavy) {
+          room.manyTeased = true;
+          add('humanMany', anyBot(), heavy.id, 1, 0.8);
+        }
+      }
+    }
+
+    // Un humain qui traîne à jouer se fait chambrer (une fois par tour).
+    if (g.status === 'playing') {
+      const cur = g.current();
+      const idleKey = g.id + ':' + g.turnSeq;
+      if (isHuman(cur.id) && room.turnStartAt && now - room.turnStartAt > IDLE_TEASE_MS && room.idleTeased !== idleKey) {
+        room.idleTeased = idleKey;
+        changed = true;
+        add('humanIdle', anyBot(), cur.id, 1, 0.9);
+      }
+    }
+
+    if (!cands.length) return changed;
+    cands.sort((a, b) => b.prio - a.prio);
+    const best = cands[0];
+    if (best.prio < 3 && now - (room.lastSayAt || 0) < SAY_GAP_MS) return changed;
+    return sayLine(room, best.speaker, best.key, best.vars, now, rng) || changed;
+  }
+
   function autoTurn(room, g, cur) {
     if (!g.hasDrawn) {
       const r = g.draw(cur.id);
@@ -286,6 +468,7 @@
       const gone = room.players.filter((p) => !p.isBot && now - p.lastSeen > LOBBY_DROP_MS);
       for (const p of gone) {
         room.players.splice(room.players.indexOf(p), 1);
+        if (room.voice) delete room.voice[p.id];
         notice(room, `${p.name} a quitté le salon`);
         changed = true;
       }
@@ -335,6 +518,12 @@
       }
 
       // Minuteur du tour en cours
+      const turnKey = g.id + ':' + g.turnSeq;
+      if (room.turnSeen !== turnKey) {
+        room.turnSeen = turnKey;
+        room.turnStartAt = now;
+        changed = true;
+      }
       const cur = g.current();
       const rp = player(room, cur.id);
       const online = cur.isBot || (rp && now - rp.lastSeen < OFFLINE_AFTER_MS);
@@ -365,6 +554,7 @@
       }
       break;
     }
+    if (banter(room, now, rng)) changed = true;
     if (changed) room.updatedAt = now;
     return changed;
   }
@@ -389,6 +579,7 @@
         isBot: p.isBot,
         connected: p.isBot || now - p.lastSeen < OFFLINE_AFTER_MS,
         wins: room.scores[p.id] || 0,
+        mic: !!(room.voice && room.voice[p.id]),
       })),
       game: room.game ? room.game.viewFor(pid) : null,
       turnDeadline: room.turnDeadline,
@@ -396,6 +587,7 @@
       serverNow: now,
       notices: room.notices.slice(-5),
       emotes: room.emotes.slice(-6),
+      says: (room.says || []).slice(-4),
     };
   }
 

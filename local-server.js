@@ -16,7 +16,7 @@ const app = express();
 app.disable('x-powered-by');
 app.use(express.static(PUBLIC_DIR));
 app.get('/r/:code', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')));
-app.all('/api/room', express.json({ limit: '16kb' }), (req, res) => apiHandler(req, res));
+app.all('/api/room', express.json({ limit: '32kb' }), (req, res) => apiHandler(req, res));
 
 /** Adresses IPv4 du réseau local (recalculées à chaque appel : l'IP Wi-Fi peut changer). */
 function lanAddresses() {

@@ -107,6 +107,62 @@ function players(n) {
   assert.strictEqual(g.turn, 1);
 }
 
+// 5a) Poser plusieurs cartes du même chiffre en une fois
+{
+  const g = new FooGame(players(3));
+  g.turn = 0;
+  g.currentColor = 'red';
+  g.discard.push({ id: 'top', color: 'red', value: '5' });
+  const p0 = g.players[0];
+  p0.hand = [
+    { id: 'r7', color: 'red', value: '7' },
+    { id: 'b7', color: 'blue', value: '7' },
+    { id: 'g7', color: 'green', value: '7' },
+    { id: 'y3', color: 'yellow', value: '3' },
+  ];
+  assert.ok(g.canSayFoo('p0'), 'FOO possible : poser les trois 7 laisserait 1 carte');
+  const g0 = new FooGame(players(2));
+  g0.turn = 0;
+  g0.currentColor = 'red';
+  g0.discard.push({ id: 't0', color: 'red', value: '5' });
+  g0.players[0].hand = [
+    { id: 'x1', color: 'red', value: '7' },
+    { id: 'x2', color: 'blue', value: '2' },
+    { id: 'x3', color: 'green', value: '3' },
+  ];
+  assert.ok(!g0.canSayFoo('p0'), 'FOO impossible : il resterait plus d’une carte');
+  assert.throws(() => g.play('p0', ['r7', 'y3']), /même chiffre/, 'chiffres différents refusés');
+  assert.throws(() => g.play('p0', ['b7', 'r7']), /ne peut pas être jouée/, 'la première carte doit être jouable');
+  assert.throws(() => g.play('p0', ['r7', 'r7']), GameError, 'doublon refusé');
+  g.play('p0', ['r7', 'g7', 'b7']);
+  assert.strictEqual(g.currentColor, 'blue', 'la dernière carte donne la couleur');
+  assert.deepStrictEqual(p0.hand.map((c) => c.id), ['y3']);
+  assert.strictEqual(g.top().id, 'b7');
+  assert.strictEqual(g.vulnerable, 'p0', 'FOO oublié après une série');
+  const evt = g.events[g.events.length - 1];
+  assert.strictEqual(evt.cards.length, 3);
+
+  // FOO! annoncé avant une série qui laisse une seule carte
+  const g2 = new FooGame(players(2));
+  g2.turn = 0;
+  g2.currentColor = 'green';
+  g2.discard.push({ id: 'top2', color: 'green', value: '1' });
+  g2.players[0].hand = [
+    { id: 'a', color: 'green', value: '4' },
+    { id: 'b', color: 'red', value: '4' },
+    { id: 'c', color: 'blue', value: '9' },
+  ];
+  assert.ok(g2.canSayFoo('p0'));
+  assert.ok(g2.viewFor('p0').canFoo);
+  g2.sayFoo('p0');
+  g2.play('p0', ['a', 'b']);
+  assert.strictEqual(g2.vulnerable, null, 'protégé par FOO!');
+  assert.strictEqual(g2.currentColor, 'red');
+  // un +2 ne peut pas être accompagné
+  g2.players[1].hand.push({ id: 'd1', color: 'red', value: 'draw2' }, { id: 'd2', color: 'blue', value: 'draw2' });
+  assert.throws(() => g2.play('p1', ['d1', 'd2']), /même chiffre/);
+}
+
 // 5b) Sauvegarde / restauration JSON (Redis, localStorage) en pleine partie
 {
   const g = new FooGame(players(3));

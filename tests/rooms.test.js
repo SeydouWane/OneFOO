@@ -140,4 +140,66 @@ console.log('✔ temps écoulé : le tour passe automatiquement');
   console.log('✔ salon : les absents sont retirés, l’hôte est transmis');
 }
 
+// 7) Le système est taquin : il parle au début, pendant la partie et à la fin
+{
+  let t = 50_000_000;
+  let r = Rooms.newRoom('SOLO-t', 'solo', { id: 'local', name: 'Ibou' }, t, { level: 7 });
+  for (let i = 0; i < 3; i++) Rooms.addBot(r);
+  Rooms.startGame(r, t);
+  Rooms.advance(r, t);
+  assert.strictEqual(r.says.length, 1, 'une réplique dès le début');
+  assert.ok(r.game.player(r.says[0].playerId).isBot, 'c’est un bot qui parle');
+  console.log(`   « ${r.says[0].text} »`);
+  let lines = 0;
+  let lastSay = r.says[0].at;
+  let minGap = Infinity;
+  let n = 0;
+  while (Rooms.status(r) === 'playing' && n++ < 3000) {
+    t += 400;
+    humanMove(r, 'local', t);
+    const before = r.saySeq;
+    Rooms.advance(r, t);
+    if (r.saySeq !== before) {
+      lines++;
+      const s = r.says[r.says.length - 1];
+      if (!/gagn|Revanche|chance|Je te gagne|Trop facile|on rejoue/i.test(s.text)) minGap = Math.min(minGap, s.at - lastSay);
+      lastSay = s.at;
+    }
+    r = roundtrip(r);
+  }
+  const last = r.says[r.says.length - 1];
+  assert.ok(lines >= 2, 'le système parle pendant la partie');
+  assert.ok(last.at === r.updatedAt || lines > 0);
+  const winner = r.game.player(r.game.winnerId);
+  console.log(`   fin (${winner.isBot ? 'le système gagne' : 'le joueur gagne'}) : « ${last.text} »`);
+  assert.ok(r.says.every((s) => !/\{\w+\}/.test(s.text)), 'pas de modèle non rempli');
+  console.log(`✔ système taquin : ${lines + 1} répliques sur la partie`);
+}
+
+// 8) Poser plusieurs cartes via le salon + micro
+{
+  const t = 70_000_000;
+  const r = Rooms.newRoom('MULTI', 'friends', A, t);
+  Rooms.join(r, B, t);
+  Rooms.act(r, 'pA', 'start', {}, t);
+  const g = r.game;
+  g.turn = g.players.findIndex((p) => p.id === 'pA');
+  g.currentColor = 'red';
+  g.discard.push({ id: 'zz9', color: 'red', value: '9' });
+  g.player('pA').hand = [
+    { id: 'q1', color: 'red', value: '2' },
+    { id: 'q2', color: 'green', value: '2' },
+    { id: 'q3', color: 'blue', value: '5' },
+  ];
+  Rooms.act(r, 'pA', 'play', { cardIds: ['q1', 'q2'] }, t);
+  assert.strictEqual(g.currentColor, 'green');
+  assert.strictEqual(g.player('pA').hand.length, 1);
+
+  Rooms.act(r, 'pB', 'voice', { on: true }, t);
+  assert.ok(Rooms.view(r, 'pA', t).players.find((p) => p.id === 'pB').mic, 'micro visible des autres');
+  Rooms.act(r, 'pB', 'voice', { on: false }, t);
+  assert.ok(!Rooms.view(r, 'pA', t).players.find((p) => p.id === 'pB').mic);
+  console.log('✔ salon : poser plusieurs cartes, état du micro');
+}
+
 console.log('✔ rooms tests OK');

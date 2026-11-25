@@ -8,6 +8,8 @@
  *  - Si on ne peut/veut pas jouer : on pioche 1 carte. Si elle est jouable, on peut la poser, sinon le tour passe.
  *  - Passe : le suivant saute son tour. Inverse : change le sens (à 2 joueurs = Passe).
  *  - +2 / Joker +4 : le suivant pioche 2 / 4 et saute son tour.
+ *  - Plusieurs cartes du même chiffre (couleurs différentes) peuvent être posées ensemble :
+ *    la première doit être jouable, la dernière posée donne la couleur.
  *  - Quand il ne reste qu'une carte, il faut annoncer "FOO!". Sinon un adversaire peut vous attraper : +2 cartes.
  *  - Le premier qui n'a plus de cartes gagne la manche.
  */
@@ -72,6 +74,7 @@
     if (card.color === currentColor) return true;
     return card.value === top.value;
   }
+  const isNumber = (card) => /^\d$/.test(card.value);
 
   class FooGame {
     /**
@@ -203,21 +206,35 @@
     }
 
     // ---------- Actions ----------
-    play(playerId, cardId, chosenColor) {
+    /**
+     * Pose une carte, ou plusieurs cartes du même chiffre (dans l'ordre donné).
+     * @param {string|string[]} cardIds
+     */
+    play(playerId, cardIds, chosenColor) {
+      const ids = (Array.isArray(cardIds) ? cardIds : [cardIds]).map(String);
+      if (!ids.length || ids.length > 10 || new Set(ids).size !== ids.length) throw new GameError('Sélection de cartes invalide.');
       this.assertTurn(playerId);
       const p = this.player(playerId);
-      const idx = p.hand.findIndex((c) => c.id === cardId);
-      if (idx === -1) throw new GameError("Vous n'avez pas cette carte.");
-      const card = p.hand[idx];
-      if (this.hasDrawn && card.id !== this.drawnCardId) throw new GameError('Vous ne pouvez jouer que la carte piochée.');
-      if (!isPlayable(card, this.top(), this.currentColor)) throw new GameError('Cette carte ne peut pas être jouée.');
-      if (card.color === 'wild' && !COLORS.includes(chosenColor)) throw new GameError('Choisissez une couleur.');
+      const cards = ids.map((id) => p.hand.find((c) => c.id === id));
+      if (cards.some((c) => !c)) throw new GameError("Vous n'avez pas cette carte.");
+      const first = cards[0];
+      if (this.hasDrawn && (cards.length > 1 || first.id !== this.drawnCardId)) throw new GameError('Vous ne pouvez jouer que la carte piochée.');
+      if (!isPlayable(first, this.top(), this.currentColor)) throw new GameError('Cette carte ne peut pas être jouée.');
+      if (cards.length > 1 && !cards.every((c) => isNumber(c) && c.value === first.value)) {
+        throw new GameError('On ne peut poser ensemble que des cartes du même chiffre.');
+      }
+      if (first.color === 'wild' && !COLORS.includes(chosenColor)) throw new GameError('Choisissez une couleur.');
 
       this.closeVulnerability(playerId);
-      p.hand.splice(idx, 1);
-      this.discard.push(card);
+      for (const c of cards) {
+        p.hand.splice(p.hand.indexOf(c), 1);
+        this.discard.push(c);
+      }
+      const card = cards[cards.length - 1]; // la dernière posée donne la couleur
       this.currentColor = card.color === 'wild' ? chosenColor : card.color;
-      this.log({ type: 'play', playerId, card, color: this.currentColor });
+      const evt = { type: 'play', playerId, card, color: this.currentColor };
+      if (cards.length > 1) evt.cards = cards;
+      this.log(evt);
 
       if (p.hand.length === 0) {
         this.status = 'ended';
@@ -291,12 +308,27 @@
       return { ok: true };
     }
 
+    /**
+     * FOO! peut être annoncé avec 1 ou 2 cartes, ou à son tour quand une série de chiffres
+     * identiques jouable laisserait exactement 1 carte.
+     */
+    canSayFoo(playerId) {
+      const p = this.player(playerId);
+      if (!p || this.status !== 'playing') return false;
+      if (p.hand.length <= 2) return true;
+      if (this.current().id !== playerId || this.hasDrawn) return false;
+      const top = this.top();
+      const groups = {};
+      for (const c of p.hand) if (isNumber(c)) (groups[c.value] = groups[c.value] || []).push(c);
+      return Object.values(groups).some((g) => g.length === p.hand.length - 1 && g.some((c) => isPlayable(c, top, this.currentColor)));
+    }
+
     sayFoo(playerId) {
       if (this.status !== 'playing') throw new GameError('La partie est terminée.');
       const p = this.player(playerId);
       if (!p) throw new GameError('Joueur inconnu.');
-      if (p.hand.length > 2) throw new GameError('FOO! se dit quand il vous reste 1 ou 2 cartes.');
       if (p.saidFoo) return { ok: true };
+      if (!this.canSayFoo(playerId)) throw new GameError("FOO! se dit quand il ne va plus vous rester qu'une carte.");
       p.saidFoo = true;
       if (this.vulnerable === playerId) this.vulnerable = null;
       this.log({ type: 'foo', playerId });
@@ -341,10 +373,11 @@
         })),
         hand: me ? me.hand : [],
         playable: me ? this.playableIds(viewerId) : [],
+        canFoo: me ? !me.saidFoo && this.canSayFoo(viewerId) : false,
         events: this.events.slice(-15),
       };
     }
   }
 
-  return { FooGame, GameError, COLORS, DECK_SIZE, isPlayable, buildDeck, shuffle };
+  return { FooGame, GameError, COLORS, DECK_SIZE, isPlayable, isNumber, buildDeck, shuffle };
 });

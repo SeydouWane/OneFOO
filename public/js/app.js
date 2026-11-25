@@ -82,6 +82,8 @@
   const stats = Object.assign({ level: 1, wins: 0, losses: 0, best: 1, counted: [] }, store.get('onefoo.foo.stats', {}));
   const saveStats = () => store.set('onefoo.foo.stats', stats);
   let muted = !!store.get('onefoo.muted', false);
+  const prefs = Object.assign({ sort: 'color', expanded: false }, store.get('onefoo.prefs', {}));
+  const savePrefs = () => store.set('onefoo.prefs', prefs);
 
   const state = {
     screen: 'home',
@@ -101,8 +103,12 @@
     busy: false,
     actionText: '',
     fooHintFor: null,
+    selection: [], // cartes du même chiffre choisies pour être posées ensemble (dans l'ordre)
+    saySeq: 0,
+    manyHintFor: null,
   };
   const oppEls = new Map();
+  const isNum = (c) => /^\d$/.test(c.value);
 
   // ================================================================ son & vibrations
   let actx = null;
@@ -142,6 +148,98 @@
       if (navigator.vibrate) navigator.vibrate(p);
     } catch {}
   };
+
+  // ================================================================ voix du système (synthèse vocale)
+  const tts = {
+    ok: 'speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined',
+    voices: [],
+    init() {
+      if (!this.ok) return;
+      const load = () => {
+        const fr = speechSynthesis.getVoices().filter((v) => /^fr/i.test(v.lang));
+        this.voices = [...fr.filter((v) => /fr-FR/i.test(v.lang)), ...fr.filter((v) => !/fr-FR/i.test(v.lang))];
+      };
+      load();
+      if (speechSynthesis.addEventListener) speechSynthesis.addEventListener('voiceschanged', load);
+      // iPhone : la voix doit être "débloquée" par un premier toucher.
+      const unlock = () => {
+        window.removeEventListener('pointerdown', unlock);
+        try {
+          const u = new SpeechSynthesisUtterance(' ');
+          u.volume = 0;
+          speechSynthesis.speak(u);
+        } catch {}
+      };
+      window.addEventListener('pointerdown', unlock);
+    },
+    spoken(text) {
+      return text
+        .replace(/\p{Extended_Pictographic}/gu, '')
+        .replace(/\b(?:ha){2,}h?\b/gi, 'Ah ah ah')
+        .replace(/\b(?:hi){2,}h?\b/gi, 'Hi hi hi')
+        .replace(/…/g, '... ');
+    },
+    say(text, voiceIndex) {
+      if (!this.ok || muted) return;
+      try {
+        const u = new SpeechSynthesisUtterance(this.spoken(text));
+        u.lang = 'fr-FR';
+        if (this.voices.length) u.voice = this.voices[voiceIndex % this.voices.length];
+        u.pitch = [1.05, 1.3, 0.85, 1.45, 0.95, 1.2][voiceIndex % 6];
+        u.rate = [1.05, 1.12, 0.98, 1.15, 1.0, 1.08][voiceIndex % 6];
+        speechSynthesis.cancel();
+        speechSynthesis.speak(u);
+      } catch {}
+    },
+    stop() {
+      if (this.ok) {
+        try {
+          speechSynthesis.cancel();
+        } catch {}
+      }
+    },
+  };
+  tts.init();
+
+  function showSays(room) {
+    const fresh = (room.says || []).filter((s) => s.seq > state.saySeq);
+    if (!fresh.length) return;
+    const s = fresh[fresh.length - 1];
+    state.saySeq = s.seq;
+    if (state.screen !== 'game') return;
+    const sp = room.players.find((p) => p.id === s.playerId);
+    const voiceIdx = Math.max(0, room.players.filter((p) => p.isBot).findIndex((p) => p.id === s.playerId));
+    showBubble(s.playerId, sp ? `${sp.avatar} ${sp.name}` : '', s.text);
+    tts.say(s.text, voiceIdx);
+  }
+
+  function showBubble(pid, who, text) {
+    const box = $('#speech');
+    const game = box.parentElement;
+    $('#speechWho').textContent = who;
+    $('#speechText').textContent = text;
+    box.classList.add('show');
+    const gr = game.getBoundingClientRect();
+    const chip = oppEls.get(pid);
+    let anchorX = gr.width / 2;
+    let top = 120;
+    if (chip) {
+      const cr = chip.getBoundingClientRect();
+      anchorX = cr.left + cr.width / 2 - gr.left;
+      top = cr.bottom - gr.top + 10;
+    }
+    const w = box.offsetWidth;
+    const left = Math.max(12, Math.min(gr.width - w - 12, anchorX - w / 2));
+    box.style.left = `${left}px`;
+    box.style.top = `${top}px`;
+    $('#speechTail').style.left = `${Math.max(12, Math.min(w - 26, anchorX - left - 7))}px`;
+    oppEls.forEach((el, id) => el.classList.toggle('speaking', id === pid));
+    clearTimeout(showBubble.t);
+    showBubble.t = setTimeout(() => {
+      box.classList.remove('show');
+      oppEls.forEach((el) => el.classList.remove('speaking'));
+    }, 2600 + text.length * 45);
+  }
 
   // ================================================================ UI de base
   function toast(text, kind = '') {
@@ -225,7 +323,8 @@
     if (!code || net.inflight) return schedulePoll();
     net.inflight = true;
     try {
-      const res = await request('GET', null, `?code=${encodeURIComponent(code)}&v=${net.version}`);
+      const sig = voice.wants() ? '&sig=1' : '';
+      const res = await request('GET', null, `?code=${encodeURIComponent(code)}&v=${net.version}${sig}`);
       setOnline(true);
       if (code === net.code) {
         if (res.gone) return roomGone();
@@ -235,6 +334,8 @@
           toast(res.error, 'bad');
           return roomGone(true);
         }
+        if (res.signals) for (const s of res.signals) voice.onSignal(s);
+        if (state.room && state.room.mode === 'friends' && voice.wants()) voice.sync(state.room);
       }
     } catch {
       setOnline(false);
@@ -252,7 +353,268 @@
     net.timer = null;
     store.del('onefoo.room');
   }
+  // ================================================================ micro entre amis (WebRTC)
+  // Le son passe directement de téléphone à téléphone ; le serveur ne fait que relayer la mise en relation.
+  // Dès qu'un joueur active son micro, tous les joueurs du salon se connectent (et l'entendent).
+  function rms(an) {
+    const buf = new Uint8Array(an.fftSize);
+    an.getByteTimeDomainData(buf);
+    let s = 0;
+    for (const v of buf) {
+      const x = (v - 128) / 128;
+      s += x * x;
+    }
+    return Math.sqrt(s / buf.length);
+  }
+  function audioCtx() {
+    try {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === 'suspended') actx.resume();
+    } catch {}
+    return actx;
+  }
+  const waitIce = (pc) =>
+    new Promise((resolve) => {
+      if (pc.iceGatheringState === 'complete') return resolve();
+      const done = () => pc.iceGatheringState === 'complete' && resolve();
+      pc.addEventListener('icegatheringstatechange', done);
+      setTimeout(resolve, 2500);
+    });
+
+  const voice = {
+    micOn: false,
+    busy: false,
+    fixing: false,
+    stream: null,
+    localAn: null,
+    active: false,
+    peers: new Map(),
+    retryAt: new Map(),
+    iceServers: null,
+    meterTimer: null,
+    wants() {
+      return this.micOn || this.active;
+    },
+    track() {
+      return this.stream ? this.stream.getAudioTracks()[0] || null : null;
+    },
+    async loadIce() {
+      if (this.iceServers) return this.iceServers;
+      try {
+        const r = await request('GET', null, '?ice=1');
+        this.iceServers = (r && r.iceServers) || [];
+      } catch {
+        this.iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+      }
+      return this.iceServers;
+    },
+    send(to, data) {
+      if (!net.code) return;
+      request('POST', { action: 'signal', code: net.code, to, data }).catch(() => {});
+    },
+    async toggle() {
+      if (this.busy) return;
+      if (!state.room || state.room.mode !== 'friends') return;
+      if (!this.micOn) {
+        if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          return toast('Le micro a besoin d’une connexion sécurisée (https) : utilisez onefoo.vercel.app.', 'bad');
+        }
+        this.busy = true;
+        try {
+          this.stream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+            video: false,
+          });
+        } catch {
+          this.busy = false;
+          return toast('Micro refusé. Autorisez le micro pour ce site dans les réglages du navigateur.', 'bad');
+        }
+        this.micOn = true;
+        const ctx = audioCtx();
+        if (ctx) {
+          this.localAn = ctx.createAnalyser();
+          this.localAn.fftSize = 512;
+          ctx.createMediaStreamSource(this.stream).connect(this.localAn);
+        }
+        for (const p of this.peers.values()) this.applyTrack(p.pc);
+        this.startMeter();
+        await api('voice', { on: true });
+        this.busy = false;
+        toast('🎙️ Micro activé : vos amis vous entendent', 'good');
+      } else {
+        this.stopMic();
+        await api('voice', { on: false });
+      }
+      renderMic();
+    },
+    stopMic() {
+      this.micOn = false;
+      for (const p of this.peers.values()) this.applyTrack(p.pc);
+      if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
+      this.stream = null;
+      this.localAn = null;
+      renderMic();
+    },
+    applyTrack(pc) {
+      for (const tr of pc.getTransceivers()) {
+        if (tr.sender) tr.sender.replaceTrack(this.track()).catch(() => {});
+      }
+    },
+    /** Appelé à chaque état reçu : ouvre / ferme les connexions audio. */
+    sync(room) {
+      if (!room || room.mode !== 'friends') return this.shutdown();
+      const mine = room.players.find((p) => p.id === playerId);
+      if (mine && mine.mic && !this.micOn && !this.fixing && !this.busy) {
+        // le serveur croit notre micro allumé (ex. page rechargée) : on corrige
+        this.fixing = true;
+        api('voice', { on: false }).finally(() => (this.fixing = false));
+      }
+      this.active = room.players.some((p) => p.mic && !p.isBot && p.id !== playerId) || this.micOn;
+      if (!this.active) return this.closeAll();
+      const others = room.players.filter((p) => !p.isBot && p.id !== playerId && p.connected);
+      const ids = new Set(others.map((p) => p.id));
+      for (const id of [...this.peers.keys()]) if (!ids.has(id)) this.close(id);
+      const now = Date.now();
+      for (const p of others) {
+        if (!this.peers.has(p.id) && playerId < p.id && now >= (this.retryAt.get(p.id) || 0)) this.call(p.id);
+      }
+      this.startMeter();
+    },
+    newPeer(id, session) {
+      const pc = new RTCPeerConnection({ iceServers: this.iceServers || [] });
+      const peer = { pc, session, audio: null, an: null, timer: null };
+      pc.ontrack = (e) => this.attach(peer, e.streams[0] || new MediaStream([e.track]));
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'connected') clearTimeout(peer.timer);
+        if (pc.connectionState === 'failed') this.close(id, true);
+      };
+      peer.timer = setTimeout(() => pc.connectionState !== 'connected' && this.close(id, true), 20000);
+      this.peers.set(id, peer);
+      return peer;
+    },
+    async call(id) {
+      await this.loadIce();
+      if (this.peers.has(id) || !this.active) return;
+      const session = Math.random().toString(36).slice(2, 10);
+      const peer = this.newPeer(id, session);
+      try {
+        const tr = peer.pc.addTransceiver('audio', { direction: 'sendrecv' });
+        if (this.track()) await tr.sender.replaceTrack(this.track());
+        await peer.pc.setLocalDescription(await peer.pc.createOffer());
+        await waitIce(peer.pc);
+        if (this.peers.get(id) !== peer) return;
+        this.send(id, { type: 'offer', sdp: peer.pc.localDescription.sdp, session });
+      } catch (err) {
+        console.error('[voix]', err);
+        this.close(id, true);
+      }
+    },
+    async onSignal(s) {
+      try {
+        if (s.type === 'offer') {
+          await this.loadIce();
+          this.close(s.from);
+          const peer = this.newPeer(s.from, s.session);
+          await peer.pc.setRemoteDescription({ type: 'offer', sdp: s.sdp });
+          const tr = peer.pc.getTransceivers()[0];
+          if (tr) {
+            tr.direction = 'sendrecv';
+            if (this.track()) await tr.sender.replaceTrack(this.track());
+          }
+          await peer.pc.setLocalDescription(await peer.pc.createAnswer());
+          await waitIce(peer.pc);
+          if (this.peers.get(s.from) !== peer) return;
+          this.send(s.from, { type: 'answer', sdp: peer.pc.localDescription.sdp, session: s.session });
+        } else if (s.type === 'answer') {
+          const peer = this.peers.get(s.from);
+          if (peer && peer.session === s.session && peer.pc.signalingState === 'have-local-offer') {
+            await peer.pc.setRemoteDescription({ type: 'answer', sdp: s.sdp });
+          }
+        } else if (s.type === 'bye') this.close(s.from);
+      } catch (err) {
+        console.error('[voix]', err);
+        this.close(s.from, true);
+      }
+    },
+    attach(peer, stream) {
+      if (!peer.audio) {
+        peer.audio = document.createElement('audio');
+        peer.audio.autoplay = true;
+        peer.audio.setAttribute('playsinline', '');
+        document.body.append(peer.audio);
+      }
+      peer.audio.srcObject = stream;
+      peer.audio.muted = muted;
+      peer.audio.play().catch(() => toast('Touchez l’écran pour entendre vos amis'));
+      const ctx = audioCtx();
+      if (ctx && !peer.an) {
+        try {
+          peer.an = ctx.createAnalyser();
+          peer.an.fftSize = 512;
+          ctx.createMediaStreamSource(stream).connect(peer.an);
+        } catch {
+          peer.an = null;
+        }
+      }
+    },
+    close(id, retry = false) {
+      const peer = this.peers.get(id);
+      if (!peer) return;
+      clearTimeout(peer.timer);
+      try {
+        peer.pc.close();
+      } catch {}
+      if (peer.audio) peer.audio.remove();
+      this.peers.delete(id);
+      const el = oppEls.get(id);
+      if (el) el.classList.remove('talking');
+      if (retry) this.retryAt.set(id, Date.now() + 4000);
+    },
+    closeAll() {
+      for (const id of [...this.peers.keys()]) this.close(id);
+    },
+    shutdown() {
+      this.closeAll();
+      if (this.micOn || this.stream) this.stopMic();
+      this.active = false;
+      clearInterval(this.meterTimer);
+      this.meterTimer = null;
+    },
+    setMuted(m) {
+      for (const p of this.peers.values()) if (p.audio) p.audio.muted = m;
+    },
+    startMeter() {
+      if (this.meterTimer) return;
+      this.meterTimer = setInterval(() => {
+        for (const [id, p] of this.peers) {
+          const el = oppEls.get(id);
+          if (el) el.classList.toggle('talking', !!p.an && rms(p.an) > 0.035);
+        }
+        $('#micBtn').classList.toggle('talking', !!this.localAn && rms(this.localAn) > 0.035);
+        if (!this.active && !this.micOn) {
+          clearInterval(this.meterTimer);
+          this.meterTimer = null;
+        }
+      }, 160);
+    },
+  };
+
+  function renderMic() {
+    const on = voice.micOn;
+    const friends = state.room && state.room.mode === 'friends';
+    const mb = $('#micBtn');
+    mb.classList.toggle('hidden', !friends);
+    mb.classList.toggle('on', on);
+    mb.setAttribute('aria-label', on ? 'Couper le micro' : 'Activer le micro');
+    const lb = $('#lobbyMicBtn');
+    lb.classList.toggle('on', on);
+    lb.textContent = on ? '🎙️ Micro activé : touchez pour le couper' : '🎙️ Activer le micro pour parler aux amis';
+  }
+  $('#micBtn').addEventListener('click', () => voice.toggle());
+  $('#lobbyMicBtn').addEventListener('click', () => voice.toggle());
+
   function roomGone(silent = false) {
+    voice.shutdown();
     stopPolling();
     state.room = null;
     if (state.screen === 'game' || state.screen === 'lobby') {
@@ -368,7 +730,10 @@
     if (fresh) {
       state.noticeSeq = room.notices.reduce((m, n) => Math.max(m, n.seq), 0);
       state.emoteSeq = room.emotes.reduce((m, e) => Math.max(m, e.seq), 0);
+      // on montre la dernière réplique du système si elle est toute récente (ex. début de partie)
+      state.saySeq = (room.says || []).filter((s) => room.serverNow - s.at > 5000).reduce((m, s) => Math.max(m, s.seq), 0);
       state.lastGameId = null;
+      state.selection = [];
     } else {
       for (const n of room.notices) if (n.seq > state.noticeSeq) toast(n.text);
       state.noticeSeq = room.notices.reduce((m, n) => Math.max(m, n.seq), state.noticeSeq);
@@ -384,6 +749,10 @@
       renderGame(room);
     }
     if (!fresh) showEmotes(room);
+    showSays(room);
+    if (room.mode === 'friends') voice.sync(room);
+    else if (voice.active || voice.micOn) voice.shutdown();
+    renderMic();
   }
 
   function showEmotes(room) {
@@ -504,6 +873,7 @@
     }
   }
   function leaveFriendsRoom() {
+    voice.shutdown();
     if (state.room && state.room.mode === 'friends') {
       const code = state.room.code;
       state.leftCodes.add(code);
@@ -608,6 +978,7 @@
             p.id === room.hostId ? h('span', { class: 'tag host', text: '👑 Hôte' }) : null,
             p.id === playerId ? h('span', { class: 'tag me', text: 'Vous' }) : null,
             p.isBot ? h('span', { class: 'tag', text: 'IA' }) : null,
+            p.mic ? h('span', { class: 'tag mic', text: '🎙️ micro' }) : null,
             !p.isBot && !p.connected ? h('span', { class: 'tag off', text: 'hors ligne' }) : null
           ),
           p.wins ? h('span', { class: 'pl-wins', text: `🏆 ${p.wins}` }) : null,
@@ -783,6 +1154,10 @@
       if (p.saidFoo && p.cardCount <= 2) {
         if (!foo) el.append(h('span', { class: 'opp-foo', text: 'FOO!' }));
       } else if (foo) foo.remove();
+      const mic = $('.opp-mic', el);
+      if (rp && rp.mic) {
+        if (!mic) el.append(h('span', { class: 'opp-mic', text: '🎙️', title: 'Micro activé' }));
+      } else if (mic) mic.remove();
       wrap.appendChild(el);
     }
     for (const [id, el] of oppEls) {
@@ -825,16 +1200,37 @@
     pile.classList.toggle('can', canDraw && g.playable.length === 0);
   }
 
+  const byColor = (a, b) => COLOR_ORDER[a.color] - COLOR_ORDER[b.color] || valueRank(a.value) - valueRank(b.value);
+  const byNumber = (a, b) => valueRank(a.value) - valueRank(b.value) || COLOR_ORDER[a.color] - COLOR_ORDER[b.color];
+
+  /** La sélection reste valable seulement à son tour, avant d'avoir pioché, avec une 1re carte jouable. */
+  function validSelection(g, myTurn) {
+    const inHand = new Set(g.hand.map((c) => c.id));
+    let sel = state.selection.filter((id) => inHand.has(id));
+    if (!myTurn || g.hasDrawn || !sel.length || !g.playable.includes(sel[0])) sel = [];
+    state.selection = sel;
+    return sel;
+  }
+
   function renderHand(g, myTurn) {
     const hand = $('#hand');
     hand.classList.toggle('my-turn', myTurn);
+    $('#handWrap').classList.toggle('expanded', prefs.expanded);
+    $('.game').classList.toggle('expanded', prefs.expanded);
     const playable = new Set(g.playable);
-    const sorted = [...g.hand].sort((a, b) => COLOR_ORDER[a.color] - COLOR_ORDER[b.color] || valueRank(a.value) - valueRank(b.value));
+    const sel = validSelection(g, myTurn);
+    const first = sel.length ? g.hand.find((c) => c.id === sel[0]) : null;
+    const sorted = [...g.hand].sort(prefs.sort === 'number' ? byNumber : byColor);
     let k = 0;
     const els = sorted.map((c) => {
       const el = cardEl(c);
       el.setAttribute('role', 'button');
       if (playable.has(c.id)) el.classList.add('playable');
+      const order = sel.indexOf(c.id);
+      if (order !== -1) {
+        el.classList.add('selected');
+        el.dataset.order = order + 1;
+      } else if (first && isNum(c) && c.value === first.value) el.classList.add('combo');
       if (!state.prevHandIds.has(c.id)) {
         el.classList.add('new');
         el.style.animationDelay = `${Math.min(k++, 8) * 60}ms`;
@@ -845,12 +1241,59 @@
     hand.replaceChildren(...els);
     state.prevHandIds = new Set(g.hand.map((c) => c.id));
     layoutHand();
+
+    // Astuce : beaucoup de cartes -> on peut les étaler (2 premières fois)
+    if (g.hand.length >= 10 && !prefs.expanded && state.manyHintFor !== g.id) {
+      state.manyHintFor = g.id;
+      const shown = store.get('onefoo.expandHints', 0);
+      if (shown < 2) {
+        store.set('onefoo.expandHints', shown + 1);
+        toast('Beaucoup de cartes ? Touchez ⤢ pour les étaler.');
+      }
+    }
   }
+
+  function rerenderHand() {
+    const r = state.room;
+    if (!r || !r.game) return;
+    const g = r.game;
+    const myTurn = g.status === 'playing' && g.turnPlayerId === playerId;
+    renderHand(g, myTurn);
+    renderControls(g, g.players.find((p) => p.id === playerId), myTurn);
+  }
+
+  function renderTools() {
+    const sortBtn = $('#sortBtn');
+    sortBtn.textContent = prefs.sort === 'number' ? '🔢' : '🎨';
+    sortBtn.setAttribute('aria-label', prefs.sort === 'number' ? 'Cartes triées par chiffre (toucher pour trier par couleur)' : 'Cartes triées par couleur (toucher pour trier par chiffre)');
+    const ex = $('#expandBtn');
+    ex.textContent = prefs.expanded ? '⤡' : '⤢';
+    ex.classList.toggle('on', prefs.expanded);
+    ex.setAttribute('aria-label', prefs.expanded ? 'Regrouper les cartes' : 'Étaler les cartes');
+  }
+  $('#sortBtn').addEventListener('click', () => {
+    prefs.sort = prefs.sort === 'number' ? 'color' : 'number';
+    savePrefs();
+    renderTools();
+    rerenderHand();
+    toast(prefs.sort === 'number' ? 'Cartes triées par chiffre' : 'Cartes triées par couleur');
+  });
+  $('#expandBtn').addEventListener('click', () => {
+    prefs.expanded = !prefs.expanded;
+    savePrefs();
+    renderTools();
+    rerenderHand();
+  });
+  renderTools();
 
   function layoutHand() {
     const cards = $('#hand').children;
     const n = cards.length;
     if (!n) return;
+    if (prefs.expanded) {
+      for (const c of cards) c.style.marginLeft = '';
+      return;
+    }
     const cw = cards[0].offsetWidth;
     if (!cw) return;
     const avail = $('#handWrap').clientWidth - 36;
@@ -864,12 +1307,23 @@
     const playing = g.status === 'playing';
     const fooBtn = $('#fooBtn');
     const count = mine ? mine.cardCount : 0;
-    fooBtn.disabled = !playing || !mine || count > 2 || mine.saidFoo;
-    fooBtn.classList.toggle('ready', !fooBtn.disabled && myTurn && count === 2);
+    const sel = state.selection;
+    fooBtn.disabled = !playing || !mine || !g.canFoo;
+    const leavesOne = sel.length ? count - sel.length === 1 : count === 2;
+    fooBtn.classList.toggle('ready', !fooBtn.disabled && myTurn && leavesOne);
     fooBtn.classList.toggle('urgent', playing && g.vulnerable === playerId);
     fooBtn.textContent = mine && mine.saidFoo && count <= 2 ? 'FOO! ✓' : 'FOO!';
 
     $('#passBtn').classList.toggle('hidden', !(myTurn && g.hasDrawn));
+    const selecting = myTurn && sel.length > 0;
+    const playSel = $('#playSelBtn');
+    playSel.classList.toggle('hidden', !selecting);
+    $('#cancelSelBtn').classList.toggle('hidden', !selecting);
+    if (selecting) {
+      playSel.textContent = sel.length > 1 ? `Poser ×${sel.length}` : 'Poser';
+      playSel.setAttribute('aria-label', sel.length > 1 ? `Poser ${sel.length} cartes` : 'Poser la carte');
+    }
+    $('.actions').classList.toggle('selecting', selecting);
 
     const catchBtn = $('#catchBtn');
     const target = playing && g.vulnerable && g.vulnerable !== playerId ? g.players.find((p) => p.id === g.vulnerable) : null;
@@ -880,7 +1334,7 @@
     }
 
     // Astuce FOO! (les 3 premières fois)
-    if (playing && myTurn && count === 2 && !mine.saidFoo && state.fooHintFor !== g.id) {
+    if (playing && myTurn && count === 2 && g.canFoo && state.fooHintFor !== g.id) {
       const shown = store.get('onefoo.fooHints', 0);
       state.fooHintFor = g.id;
       if (shown < 3) {
@@ -930,10 +1384,12 @@
         case 'start':
           state.actionText = isMe ? 'Vous commencez la partie' : `${who} commence la partie`;
           break;
-        case 'play':
-          state.actionText = `${who} ${isMe ? 'jouez' : 'joue'} ${cardName(e.card, e.color)}`;
+        case 'play': {
+          const what = e.cards ? e.cards.map((c) => cardName(c, c.color)).join(' + ') : cardName(e.card, e.color);
+          state.actionText = `${who} ${isMe ? 'posez' : 'pose'} ${what}`;
           if (!isMe) sfx('play');
           break;
+        }
         case 'draw':
           if (!isMe) state.actionText = `${who} pioche une carte`;
           else sfx('draw');
@@ -994,7 +1450,22 @@
       shake($('#statusMain'));
       return;
     }
+    // Sélection en cours de plusieurs cartes du même chiffre
+    const sel = state.selection;
+    if (sel.length) {
+      const first = g.hand.find((c) => c.id === sel[0]);
+      if (sel.includes(card.id)) {
+        state.selection = sel.filter((id) => id !== card.id);
+        return rerenderHand();
+      }
+      if (first && isNum(card) && card.value === first.value) {
+        state.selection = [...sel, card.id];
+        return rerenderHand();
+      }
+      state.selection = []; // autre carte : nouvelle action
+    }
     if (!g.playable.includes(card.id)) {
+      rerenderHand();
       shake(el);
       toast(g.hasDrawn ? 'Seule la carte piochée peut être jouée' : 'Cette carte ne peut pas être jouée ici');
       return;
@@ -1004,18 +1475,36 @@
       openModal('colorModal');
       return;
     }
-    playCard(card.id);
+    const twins = !g.hasDrawn && isNum(card) && g.hand.some((c) => c.id !== card.id && c.value === card.value);
+    if (twins) {
+      state.selection = [card.id];
+      rerenderHand();
+      const shown = store.get('onefoo.comboHints', 0);
+      if (shown < 3) {
+        store.set('onefoo.comboHints', shown + 1);
+        toast(`Vous avez d'autres ${card.value} : touchez-les pour les poser ensemble, puis « Poser ».`);
+      }
+      return;
+    }
+    playCard([card.id]);
   }
-  function playCard(cardId, color) {
+  function playCard(cardIds, color) {
     return guarded(async () => {
-      const res = await send('play', { cardId, color });
+      const res = await send('play', { cardIds, color });
+      state.selection = [];
       if (res && res.ok) sfx('play');
+      else rerenderHand();
     });
   }
+  $('#playSelBtn').addEventListener('click', () => state.selection.length && playCard([...state.selection]));
+  $('#cancelSelBtn').addEventListener('click', () => {
+    state.selection = [];
+    rerenderHand();
+  });
   $$('.color-choice').forEach((b) =>
     b.addEventListener('click', () => {
       closeModal('colorModal');
-      if (state.pendingWild) playCard(state.pendingWild, b.dataset.color);
+      if (state.pendingWild) playCard([state.pendingWild], b.dataset.color);
       state.pendingWild = null;
     })
   );
@@ -1042,7 +1531,10 @@
     muted = !muted;
     store.set('onefoo.muted', muted);
     soundBtn.textContent = muted ? '🔇' : '🔊';
-    if (!muted) sfx('turn');
+    voice.setMuted(muted);
+    if (muted) tts.stop();
+    else sfx('turn');
+    toast(muted ? 'Son coupé (jeu, voix du système et des amis)' : 'Son activé');
   });
 
   // Minuteur de tour (parties entre amis)
