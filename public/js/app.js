@@ -152,14 +152,32 @@
   };
 
   // ================================================================ voix du système (synthèse vocale)
+  // Les voix "naturelles" (neuronales) sont bien plus humaines : on les choisit en priorité.
+  const FEMALE_VOICE = /denise|eloise|vivienne|ariane|am[ée]lie|audrey|aur[ée]lie|julie|hortense|marie|virginie|c[ée]line|chantal|sylvie|brigitte|jacqueline|coralie|charline|yvette|l[ée]a\b|manon|female|femme/i;
+  const MALE_VOICE = /henri|paul|thomas|daniel|nicolas|jean|r[ée]my|antoine|j[ée]r[ôo]me|alain|claude|fabrice|guillaume|maurice|yves|male\b|homme/i;
+  const FEMALE_BOTS = /^(awa|fatou|khady|a[iï]da|binta)$/i;
+  function voiceScore(v) {
+    let s = /^fr[-_]fr/i.test(v.lang) ? 4 : 2;
+    if (/natural|neural|online/i.test(v.name)) s += 12; // Edge / Windows : voix neuronales
+    if (/premium|enhanced|am[ée]lior/i.test(v.name)) s += 9; // iPhone : voix améliorées
+    if (/google/i.test(v.name)) s += 7; // Chrome / Android
+    if (!v.localService) s += 2;
+    if (/compact|espeak/i.test(v.name)) s -= 8;
+    if (/microsoft/i.test(v.name) && !/online|natural/i.test(v.name)) s -= 3; // anciennes voix Windows
+    return s;
+  }
+  const voiceGender = (v) => (FEMALE_VOICE.test(v.name) ? 'f' : MALE_VOICE.test(v.name) ? 'm' : '?');
+
   const tts = {
     ok: 'speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined',
     voices: [],
     init() {
       if (!this.ok) return;
       const load = () => {
-        const fr = speechSynthesis.getVoices().filter((v) => /^fr/i.test(v.lang));
-        this.voices = [...fr.filter((v) => /fr-FR/i.test(v.lang)), ...fr.filter((v) => !/fr-FR/i.test(v.lang))];
+        this.voices = speechSynthesis
+          .getVoices()
+          .filter((v) => /^fr/i.test(v.lang))
+          .sort((a, b) => voiceScore(b) - voiceScore(a));
       };
       load();
       if (speechSynthesis.addEventListener) speechSynthesis.addEventListener('voiceschanged', load);
@@ -177,18 +195,37 @@
     spoken(text) {
       return text
         .replace(/\p{Extended_Pictographic}/gu, '')
-        .replace(/\b(?:ha){2,}h?\b/gi, 'Ah ah ah')
-        .replace(/\b(?:hi){2,}h?\b/gi, 'Hi hi hi')
-        .replace(/…/g, '... ');
+        .replace(/\b(?:ha){2,}h?\b/gi, 'Ah, ah, ah')
+        .replace(/\b(?:hi){2,}h?\b/gi, 'Hi, hi, hi')
+        .replace(/…/g, ', ')
+        .replace(/\s+/g, ' ')
+        .trim();
     },
-    say(text, voiceIndex) {
+    /** Meilleure voix pour ce bot : voix de femme pour Awa, Fatou… et d'homme pour Moussa, Ibou… si possible. */
+    pick(botName, idx) {
+      if (!this.voices.length) return { voice: null, match: false };
+      const want = FEMALE_BOTS.test(botName) ? 'f' : 'm';
+      const top = voiceScore(this.voices[0]);
+      const good = this.voices.filter((v) => voiceScore(v) >= top - 6);
+      const same = good.filter((v) => voiceGender(v) === want);
+      if (same.length) return { voice: same[idx % same.length], match: true, want };
+      return { voice: good[idx % good.length], match: false, want };
+    },
+    say(text, botName, idx) {
       if (!this.ok || muted) return;
       try {
         const u = new SpeechSynthesisUtterance(this.spoken(text));
-        u.lang = 'fr-FR';
-        if (this.voices.length) u.voice = this.voices[voiceIndex % this.voices.length];
-        u.pitch = [1.05, 1.3, 0.85, 1.45, 0.95, 1.2][voiceIndex % 6];
-        u.rate = [1.05, 1.12, 0.98, 1.15, 1.0, 1.08][voiceIndex % 6];
+        const { voice, match, want } = this.pick(botName, idx);
+        if (voice) {
+          u.voice = voice;
+          u.lang = voice.lang;
+        } else u.lang = 'fr-FR';
+        // Intonation proche du naturel : on ne déforme la voix que si son genre ne correspond pas au bot.
+        const g = voice ? voiceGender(voice) : '?';
+        if (match) u.pitch = [1, 1.04, 0.97][idx % 3];
+        else if (g === '?') u.pitch = want === 'f' ? 1.12 : 0.9;
+        else u.pitch = want === 'f' ? 1.18 : 0.86;
+        u.rate = voice && /natural|neural|online/i.test(voice.name) ? 1.05 : 1;
         speechSynthesis.cancel();
         speechSynthesis.speak(u);
       } catch {}
@@ -212,7 +249,7 @@
     const sp = room.players.find((p) => p.id === s.playerId);
     const voiceIdx = Math.max(0, room.players.filter((p) => p.isBot).findIndex((p) => p.id === s.playerId));
     showBubble(s.playerId, sp ? `${sp.avatar} ${sp.name}` : '', s.text);
-    tts.say(s.text, voiceIdx);
+    tts.say(s.text, sp ? sp.name : '', voiceIdx);
   }
 
   function showBubble(pid, who, text) {
@@ -1242,6 +1279,15 @@
     const canDraw = myTurn && !g.hasDrawn;
     pile.disabled = !canDraw;
     pile.classList.toggle('can', canDraw && g.playable.length === 0);
+    // Pénalité +2 / +4 cumulée en attente
+    const pending = g.status === 'playing' && g.pending;
+    const badge = $('#pendingBadge');
+    badge.classList.toggle('hidden', !pending);
+    if (pending) badge.textContent = `+${g.pending.count} en attente`;
+    const take = $('#pileTake');
+    take.classList.toggle('hidden', !(pending && myTurn));
+    if (pending && myTurn) take.textContent = `Prendre +${g.pending.count}`;
+    pile.setAttribute('aria-label', pending && myTurn ? `Prendre les ${g.pending.count} cartes` : 'Piocher');
   }
 
   const byColor = (a, b) => COLOR_ORDER[a.color] - COLOR_ORDER[b.color] || valueRank(a.value) - valueRank(b.value);
@@ -1398,7 +1444,11 @@
     let text;
     if (g.status === 'ended') text = g.winnerId === playerId ? 'Vous avez gagné ! 🎉' : `${nameOf(g, g.winnerId)} a gagné`;
     else if (mine && mine.rank) text = `🏁 ${placeLabel(mine.rank)} place ! La partie continue : ${nameOf(g, g.turnPlayerId)} joue…`;
-    else if (myTurn) text = g.hasDrawn ? 'Posez la carte piochée ou passez' : g.playable.length ? 'À vous de jouer !' : 'Aucune carte jouable : piochez';
+    else if (myTurn && g.pending) {
+      const what = g.pending.min <= 2 ? 'un +2 ou un +4' : 'un +4';
+      text = g.playable.length ? `⚠️ +${g.pending.count} pour vous : renvoyez ${what}, ou prenez` : `⚠️ +${g.pending.count} pour vous : touchez la pioche`;
+    } else if (myTurn) text = g.hasDrawn ? 'Posez la carte piochée ou passez' : g.playable.length ? 'À vous de jouer !' : 'Aucune carte jouable : piochez';
+    else if (g.pending) text = `${nameOf(g, g.turnPlayerId)} doit renvoyer ou prendre +${g.pending.count}…`;
     else text = `${nameOf(g, g.turnPlayerId)} réfléchit…`;
     main.textContent = text;
     main.classList.toggle('mine', myTurn);
@@ -1467,6 +1517,19 @@
         case 'reverse':
           toast('⇄ Changement de sens !');
           break;
+        case 'stack': {
+          const forMe = e.target === playerId;
+          const thrownBack = e.count > e.add;
+          if (isMe) state.actionText = `Vous ${thrownBack ? 'renvoyez' : 'posez'} : +${e.count} pour ${nameOf(g, e.target)}`;
+          else {
+            state.actionText = `${who} ${thrownBack ? 'renvoie' : 'pose'} : +${e.count} pour ${forMe ? 'vous' : nameOf(g, e.target)}`;
+            if (forMe) {
+              toast(thrownBack ? `⚠️ ${who} vous renvoie la pénalité : +${e.count} !` : `⚠️ +${e.count} pour vous : renvoyez un +2/+4 ou prenez`, 'bad');
+              vibrate([50, 30, 50]);
+            } else if (thrownBack) toast(`${who} renvoie : +${e.count} pour ${nameOf(g, e.target)}`);
+          }
+          break;
+        }
         case 'finish':
           if (isMe) {
             toast(`🏁 Bravo, vous terminez à la ${placeLabel(e.rank)} place !`, 'good');
@@ -1527,7 +1590,14 @@
     if (!g.playable.includes(card.id)) {
       rerenderHand();
       shake(el);
-      toast(g.hasDrawn ? 'Seule la carte piochée peut être jouée' : 'Cette carte ne peut pas être jouée ici');
+      const what = g.pending && g.pending.min <= 2 ? 'un +2 ou un +4' : 'un +4';
+      toast(
+        g.pending
+          ? `+${g.pending.count} en attente : renvoyez ${what}, ou touchez la pioche pour prendre`
+          : g.hasDrawn
+            ? 'Seule la carte piochée peut être jouée'
+            : 'Cette carte ne peut pas être jouée ici'
+      );
       return;
     }
     if (card.color === 'wild') {

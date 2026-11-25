@@ -5,6 +5,8 @@ Application web (responsive, pensée pour le téléphone) pour jouer en ligne **
 Premier jeu : **FOO!**, un jeu de cartes de couleurs (même couleur ou même valeur, +2, Joker +4, Passe, Inverse…).
 On annonce « FOO! » quand il ne reste qu'une carte, sinon un adversaire peut vous attraper (+2 cartes).
 Plusieurs cartes du même chiffre (couleurs différentes) se posent ensemble ; la dernière posée donne la couleur.
+Les +2 et +4 se cumulent : face à un +2, on peut renvoyer un +2 (toute couleur) ou un +4 et la pénalité s'additionne
+(+4, +6…) ; un +4 ne se renvoie qu'avec un +4. Celui qui ne peut pas renvoyer pioche le total et passe son tour.
 Quand un joueur termine, les autres continuent pour les places suivantes (🥇 🥈 🥉…) jusqu'à ce qu'il n'en reste qu'un ;
 s'il ne reste que des bots en jeu, la manche s'arrête et ils sont classés selon leurs cartes restantes.
 Contre le système, seule la 1re place fait monter le système de niveau.

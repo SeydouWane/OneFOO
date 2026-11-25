@@ -7,7 +7,8 @@
  *  - 7 cartes chacun. On pose une carte de même couleur OU de même valeur, ou un Joker.
  *  - Si on ne peut/veut pas jouer : on pioche 1 carte. Si elle est jouable, on peut la poser, sinon le tour passe.
  *  - Passe : le suivant saute son tour. Inverse : change le sens (à 2 joueurs = Passe).
- *  - +2 / Joker +4 : le suivant pioche 2 / 4 et saute son tour.
+ *  - +2 / Joker +4 se cumulent : le suivant peut renvoyer un +2 (sur un +2) ou un +4 (sur tout),
+ *    la pénalité s'additionne ; celui qui ne peut pas renvoyer pioche le total et saute son tour.
  *  - Plusieurs cartes du même chiffre (couleurs différentes) peuvent être posées ensemble :
  *    la première doit être jouable, la dernière posée donne la couleur.
  *  - Quand il ne reste qu'une carte, il faut annoncer "FOO!". Sinon un adversaire peut vous attraper : +2 cartes.
@@ -106,6 +107,7 @@
       this.drawnCardId = null;
       this.vulnerable = null; // id du joueur qui a 1 carte sans avoir dit FOO
       this.vulnerableSeq = 0;
+      this.pending = null; // pénalité cumulée en attente : { count, min, by }
       this.turnSeq = 0;
       this.status = 'playing';
       this.winnerId = null;
@@ -214,9 +216,16 @@
       if (this.vulnerable && this.vulnerable !== actorId) this.vulnerable = null;
     }
 
+    /** Pendant une pénalité en attente, seule une carte +2 (sur +2) ou +4 peut être renvoyée. */
+    isStackable(card) {
+      if (!this.pending) return false;
+      return card.value === 'wild4' || (card.value === 'draw2' && this.pending.min <= 2);
+    }
+
     playableIds(playerId) {
       if (this.status !== 'playing' || this.current().id !== playerId) return [];
       const p = this.player(playerId);
+      if (this.pending) return p.hand.filter((c) => this.isStackable(c)).map((c) => c.id);
       const top = this.top();
       return p.hand
         .filter((c) => (!this.hasDrawn || c.id === this.drawnCardId) && isPlayable(c, top, this.currentColor))
@@ -236,8 +245,15 @@
       const cards = ids.map((id) => p.hand.find((c) => c.id === id));
       if (cards.some((c) => !c)) throw new GameError("Vous n'avez pas cette carte.");
       const first = cards[0];
-      if (this.hasDrawn && (cards.length > 1 || first.id !== this.drawnCardId)) throw new GameError('Vous ne pouvez jouer que la carte piochée.');
-      if (!isPlayable(first, this.top(), this.currentColor)) throw new GameError('Cette carte ne peut pas être jouée.');
+      if (this.pending) {
+        if (cards.length > 1 || !this.isStackable(first)) {
+          const what = this.pending.min <= 2 ? 'un +2 ou un +4' : 'un +4';
+          throw new GameError(`+${this.pending.count} en attente : posez ${what}, ou piochez pour prendre les cartes.`);
+        }
+      } else {
+        if (this.hasDrawn && (cards.length > 1 || first.id !== this.drawnCardId)) throw new GameError('Vous ne pouvez jouer que la carte piochée.');
+        if (!isPlayable(first, this.top(), this.currentColor)) throw new GameError('Cette carte ne peut pas être jouée.');
+      }
       if (cards.length > 1 && !cards.every((c) => isNumber(c) && c.value === first.value)) {
         throw new GameError('On ne peut poser ensemble que des cartes du même chiffre.');
       }
@@ -288,11 +304,12 @@
         }
         case 'draw2':
         case 'wild4': {
-          const count = card.value === 'draw2' ? 2 : 4;
-          const victim = this.players[this.nextIndex()];
-          const got = this.drawCards(victim, count);
-          this.log({ type: 'penalty', playerId: victim.id, count: got.length, by: playerId });
-          this.startTurn(this.nextIndex(this.turn, 2));
+          // La pénalité s'additionne et passe au suivant, qui peut la renvoyer ou la prendre.
+          const add = card.value === 'draw2' ? 2 : 4;
+          this.pending = { count: (this.pending ? this.pending.count : 0) + add, min: add, by: playerId };
+          const target = this.players[this.nextIndex()];
+          this.log({ type: 'stack', playerId, target: target.id, count: this.pending.count, add });
+          this.startTurn(this.nextIndex());
           break;
         }
         default:
@@ -315,6 +332,7 @@
       this.status = 'ended';
       this.winnerId = this.ranking[0];
       this.vulnerable = null;
+      this.pending = null;
       this.log({
         type: 'win',
         playerId: this.winnerId,
@@ -329,6 +347,15 @@
       if (this.hasDrawn) throw new GameError('Vous avez déjà pioché. Jouez la carte ou passez.');
       this.closeVulnerability(playerId);
       const p = this.player(playerId);
+      if (this.pending) {
+        // On ne peut pas renvoyer : on prend toute la pénalité et on passe son tour.
+        const { count, by } = this.pending;
+        this.pending = null;
+        const got = this.drawCards(p, count);
+        this.log({ type: 'penalty', playerId, count: got.length, by });
+        this.startTurn(this.nextIndex());
+        return { ok: true, card: null, playable: false, penalty: got.length };
+      }
       const [card] = this.drawCards(p, 1);
       this.log({ type: 'draw', playerId, count: card ? 1 : 0 });
       if (card && isPlayable(card, this.top(), this.currentColor)) {
@@ -357,7 +384,7 @@
       const p = this.player(playerId);
       if (!p || this.status !== 'playing' || !p.hand.length) return false;
       if (p.hand.length <= 2) return true;
-      if (this.current().id !== playerId || this.hasDrawn) return false;
+      if (this.current().id !== playerId || this.hasDrawn || this.pending) return false;
       const top = this.top();
       const groups = {};
       for (const c of p.hand) if (isNumber(c)) (groups[c.value] = groups[c.value] || []).push(c);
@@ -414,6 +441,7 @@
           rank: this.finished.includes(p.id) ? this.finished.indexOf(p.id) + 1 : null,
         })),
         ranking: this.ranking,
+        pending: this.pending ? { count: this.pending.count, min: this.pending.min } : null,
         hand: me ? me.hand : [],
         playable: me ? this.playableIds(viewerId) : [],
         canFoo: me ? !me.saidFoo && this.canSayFoo(viewerId) : false,

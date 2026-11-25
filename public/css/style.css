@@ -510,6 +510,22 @@ input.shake, .shake { animation: shake 0.4s; }
   background: #3a1630; color: #ffc2d6; border: 1px solid rgba(255,79,139,0.5); padding: 8px 16px; border-radius: 99px; font-size: 14px;
 }
 
+/* ---------- pénalité +2 / +4 cumulée ---------- */
+.pending-badge {
+  position: absolute; z-index: 3; left: 50%; bottom: 34px; transform: translateX(-50%);
+  padding: 6px 14px; border-radius: 99px; white-space: nowrap;
+  background: var(--red); color: #fff; font-size: 17px; font-weight: 700;
+  box-shadow: 0 0 0 4px rgba(239,68,82,0.28), 0 8px 20px rgba(0,0,0,0.5);
+  animation: pendingPulse 0.9s infinite;
+}
+@keyframes pendingPulse { 0%,100% { transform: translateX(-50%) scale(1); } 50% { transform: translateX(-50%) scale(1.08); } }
+.pile-take {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 2; white-space: nowrap;
+  background: var(--red); color: #fff; font-weight: 700; font-size: 14px; padding: 6px 10px; border-radius: 99px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.5);
+}
+.game.expanded .pending-badge { font-size: 15px; padding: 4px 12px; }
+
 /* ---------- joueurs ayant terminé (la partie continue pour les autres) ---------- */
 .opp.done .opp-av { opacity: 0.6; filter: saturate(0.6); }
 .opp.done .opp-count { background: var(--grad); color: #1b0f1f; min-width: 26px; font-size: 14px; }

@@ -6,6 +6,7 @@ const bot = require('../public/js/foo/bot.js');
 function players(n) {
   return Array.from({ length: n }, (_, i) => ({ id: 'p' + i, name: 'P' + i, isBot: true }));
 }
+const humansN = (n) => Array.from({ length: n }, (_, i) => ({ id: 'h' + i, name: 'H' + i, isBot: false }));
 
 // 1) Règles de base
 {
@@ -29,8 +30,15 @@ function players(n) {
   p0.hand.push({ id: 't-d2', color: 'red', value: 'draw2' });
   const before = g.players[1].hand.length;
   g.play('p0', 't-d2');
-  assert.strictEqual(g.players[1].hand.length, before + 2, '+2 fait piocher le suivant');
+  assert.deepStrictEqual(g.viewFor('p1').pending, { count: 2, min: 2 }, '+2 en attente pour le suivant');
+  assert.strictEqual(g.turn, 1, 'le suivant peut renvoyer ou prendre');
+  g.players[1].hand = g.players[1].hand.filter((c) => c.value !== 'draw2' && c.value !== 'wild4');
+  const h1 = g.players[1].hand.length;
+  assert.deepStrictEqual(g.playableIds('p1'), [], 'sans +2/+4, rien ne peut être joué');
+  g.draw('p1');
+  assert.strictEqual(g.players[1].hand.length, h1 + 2, '+2 fait piocher le suivant');
   assert.strictEqual(g.turn, 2, '+2 fait sauter le tour');
+  void before;
 
   const p2 = g.players[2];
   p2.hand.push({ id: 't-rev', color: 'red', value: 'reverse' });
@@ -41,11 +49,45 @@ function players(n) {
   const p1 = g.players[1];
   p1.hand.push({ id: 't-w4', color: 'wild', value: 'wild4' });
   assert.throws(() => g.play('p1', 't-w4'), GameError, 'joker sans couleur refusé');
-  const b0 = g.players[0].hand.length;
   g.play('p1', 't-w4', 'blue');
   assert.strictEqual(g.currentColor, 'blue');
+  assert.strictEqual(g.turn, 0, '+4 en attente pour le suivant');
+  g.players[0].hand = g.players[0].hand.filter((c) => c.value !== 'wild4');
+  const b0 = g.players[0].hand.length;
+  g.draw('p0');
   assert.strictEqual(g.players[0].hand.length, b0 + 4);
   assert.strictEqual(g.turn, 2);
+}
+
+// 2b) Cumul des +2 / +4 : on renvoie, la pénalité s'additionne, celui qui ne peut pas prend tout
+{
+  const g = new FooGame(humansN(3));
+  g.turn = 0;
+  g.direction = 1;
+  g.currentColor = 'red';
+  g.discard.push({ id: 'z0', color: 'red', value: '6' });
+  g.players[0].hand = [{ id: 'a2', color: 'red', value: 'draw2' }, { id: 'a5', color: 'red', value: '5' }];
+  g.players[1].hand = [{ id: 'b2', color: 'blue', value: 'draw2' }, { id: 'b7', color: 'red', value: '7' }, { id: 'b8', color: 'green', value: '8' }];
+  g.players[2].hand = [{ id: 'c4', color: 'wild', value: 'wild4' }, { id: 'c2', color: 'green', value: 'draw2' }, { id: 'c9', color: 'yellow', value: '9' }];
+  g.play('h0', 'a2');
+  assert.deepStrictEqual(g.playableIds('h1'), ['b2'], 'seul le +2 (toute couleur) peut répondre');
+  assert.throws(() => g.play('h1', 'b7'), /en attente/, 'carte normale refusée pendant la pénalité');
+  g.play('h1', 'b2');
+  assert.strictEqual(g.pending.count, 4, '+2 sur +2 = +4');
+  assert.deepStrictEqual(g.playableIds('h2').sort(), ['c2', 'c4'], '+2 ou +4 peuvent répondre');
+  g.play('h2', 'c4', 'yellow');
+  assert.strictEqual(g.pending.count, 8, '+4 sur +4 = +8');
+  assert.deepStrictEqual(g.playableIds('h0'), [], 'après un +4, un +2 ne suffit plus');
+  g.players[0].hand.push({ id: 'a22', color: 'yellow', value: 'draw2' });
+  assert.throws(() => g.play('h0', 'a22'), /un \+4/, '+2 sur +4 refusé');
+  const n0 = g.players[0].hand.length;
+  g.draw('h0');
+  assert.strictEqual(g.players[0].hand.length, n0 + 8, 'celui qui ne peut pas renvoyer prend tout');
+  assert.strictEqual(g.pending, null);
+  assert.strictEqual(g.current().id, 'h1', 'et passe son tour');
+  const pen = g.events.filter((e) => e.type === 'penalty').pop();
+  assert.deepStrictEqual([pen.playerId, pen.count, pen.by], ['h0', 8, 'h2']);
+  assert.strictEqual(g.events.filter((e) => e.type === 'stack').length, 3);
 }
 
 // 3) Inverse à 2 joueurs = rejouer
@@ -164,7 +206,6 @@ function players(n) {
 }
 
 // 5c) Quand un joueur termine, les autres continuent jusqu'à la fin (classement complet)
-const humansN = (n) => Array.from({ length: n }, (_, i) => ({ id: 'h' + i, name: 'H' + i, isBot: false }));
 {
   const g = new FooGame(humansN(3));
   g.turn = 0;
@@ -173,10 +214,12 @@ const humansN = (n) => Array.from({ length: n }, (_, i) => ({ id: 'h' + i, name:
   g.discard.push({ id: 'tt', color: 'red', value: '4' });
   g.players[0].hand = [{ id: 'last', color: 'red', value: 'draw2' }];
   g.players[0].saidFoo = true;
-  const h1 = g.players[1].hand.length;
   g.play('h0', 'last');
   assert.strictEqual(g.status, 'playing', 'la partie continue après le 1er');
   assert.deepStrictEqual(g.finished, ['h0']);
+  g.players[1].hand = g.players[1].hand.filter((c) => c.value !== 'draw2' && c.value !== 'wild4');
+  const h1 = g.players[1].hand.length;
+  g.draw('h1');
   assert.strictEqual(g.players[1].hand.length, h1 + 2, "l'effet de la dernière carte s'applique");
   assert.strictEqual(g.current().id, 'h2', 'le joueur suivant encore en jeu prend la main');
   assert.strictEqual(g.viewFor('h1').players[0].rank, 1);

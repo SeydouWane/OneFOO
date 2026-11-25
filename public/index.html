@@ -181,8 +181,10 @@
             <div class="card back"><span>FOO</span></div>
             <div class="card back"><span>FOO</span></div>
             <span class="pile-count" id="drawCount">0</span>
+            <span class="pile-take hidden" id="pileTake"></span>
           </button>
           <div class="pile discard" id="discard"></div>
+          <div class="pending-badge hidden" id="pendingBadge" aria-live="polite"></div>
           <div class="color-pill" id="colorPill"></div>
         </div>
 
@@ -265,9 +267,9 @@
         <li>Vous ne pouvez pas jouer ? Touchez la <b>pioche</b>. Si la carte piochée est jouable, posez-la ou passez.</li>
         <li><b>⊘ Passe</b> : le joueur suivant saute son tour.</li>
         <li><b>⇄ Inverse</b> : le sens du jeu change (à 2 joueurs, vous rejouez).</li>
-        <li><b>+2</b> : le suivant pioche 2 cartes et passe son tour.</li>
+        <li><b>+2</b> : le suivant pioche 2 cartes et passe son tour… sauf s'il <b>renvoie</b> un +2 (n'importe quelle couleur) ou un +4 : la pénalité s'additionne (+4, +6, +8…) et passe au suivant. Celui qui ne peut pas renvoyer prend tout.</li>
         <li><b>Joker</b> : se pose sur tout, vous choisissez la couleur.</li>
-        <li><b>Joker +4</b> : idem, et le suivant pioche 4 cartes et passe son tour.</li>
+        <li><b>Joker +4</b> : idem, et le suivant pioche 4 cartes et passe son tour. Un +4 ne se renvoie qu'avec un autre +4.</li>
         <li>Quand il ne va plus vous rester qu'une carte, touchez <b>FOO!</b> avant de poser. Si vous oubliez, un adversaire peut vous <b>attraper</b> : +2 cartes !</li>
         <li><b>Contre le système :</b> chaque victoire fait monter le système d'un niveau. Plus il monte, plus il a d'adversaires et plus il est malin et attentif. Et il parle beaucoup… (🔊 pour couper le son).</li>
         <li><b>Entre amis :</b> 30 secondes par tour, sinon le jeu pioche pour vous. Touchez <b>🎙️</b> pour parler à vos amis.</li>

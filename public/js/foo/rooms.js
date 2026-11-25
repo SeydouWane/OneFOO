@@ -86,6 +86,16 @@
       'Dernier ! Allez, ne pleure pas, on rejoue ?',
     ],
     botLast: ['Bon… dernier. Je vous ai laissé gagner, c’est tout.', 'Pfff, ces cartes sont truquées !'],
+    botStack: [
+      "Ah, tu croyais t'en sortir ? Je renvoie : plus {count} !",
+      'Non non non, je te la renvoie ! Plus {count}, bon appétit !',
+      "Et hop, retour à l'envoyeur ! Ça fait plus {count} maintenant.",
+    ],
+    humanStack: ['Hein ?! Tu me la renvoies ? Ah, tu es coriace…', "D'accord, d'accord… plus {count}, rien que ça !"],
+    bigPenalty: [
+      'Plus {count} ! Tu vas avoir besoin d’un sac pour tes cartes, hahaha !',
+      '{count} cartes ! Même mon fils ne s’est jamais fait avoir comme ça, hahaha !',
+    ],
   };
   const SAY_GAP_MS = 3500; // délai minimum entre deux répliques (sauf moments forts)
   const IDLE_TEASE_MS = 15000; // un humain qui traîne se fait chambrer
@@ -384,8 +394,8 @@
     const anyBot = () => pick(speakers, rng).id;
     const firstHuman = (room.players.find((p) => !p.isBot) || {}).id;
     const cands = [];
-    const add = (key, speaker, target, prio, prob) => {
-      if (rng() < prob) cands.push({ key, speaker, prio, vars: { name: target ? nameOf(target) : '', level: room.level } });
+    const add = (key, speaker, target, prio, prob, extra) => {
+      if (rng() < prob) cands.push({ key, speaker, prio, vars: { name: target ? nameOf(target) : '', level: room.level, ...extra } });
     };
 
     const fresh = g.events.filter((e) => e.seq > (room.banterSeq || 0));
@@ -408,8 +418,16 @@
             if (e.cards && isSpeaker(e.playerId)) add('botMulti', e.playerId, null, 1, 0.7);
             else if (e.cards && isHuman(e.playerId)) add('humanMulti', anyBot(), e.playerId, 1, 0.6);
             break;
+          case 'stack':
+            // un +2 / +4 renvoyé (la pénalité dépasse la carte posée) : la pénalité grossit
+            if (e.count > e.add) {
+              if (isSpeaker(e.playerId) && isHuman(e.target)) add('botStack', e.playerId, e.target, 2, 0.85, { count: e.count });
+              else if (isHuman(e.playerId) && isSpeaker(e.target)) add('humanStack', e.target, e.playerId, 2, 0.7, { count: e.count });
+            }
+            break;
           case 'penalty':
-            if (isSpeaker(e.by) && isHuman(e.playerId)) add('botPenalty', e.by, e.playerId, 2, 0.85);
+            if (e.count >= 6 && isHuman(e.playerId)) add('bigPenalty', isSpeaker(e.by) ? e.by : anyBot(), e.playerId, 3, 0.9, { count: e.count });
+            else if (isSpeaker(e.by) && isHuman(e.playerId)) add('botPenalty', e.by, e.playerId, 2, 0.85);
             else if (isHuman(e.by) && isSpeaker(e.playerId)) add('humanPenalty', e.playerId, e.by, 2, 0.75);
             break;
           case 'skip':
