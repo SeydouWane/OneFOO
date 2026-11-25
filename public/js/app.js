@@ -1284,9 +1284,11 @@
     const badge = $('#pendingBadge');
     badge.classList.toggle('hidden', !pending);
     if (pending) badge.textContent = `+${g.pending.count} en attente`;
+    // Étiquette sur la pioche à son tour : on peut toujours piocher, même avec des cartes jouables.
     const take = $('#pileTake');
-    take.classList.toggle('hidden', !(pending && myTurn));
-    if (pending && myTurn) take.textContent = `Prendre +${g.pending.count}`;
+    take.classList.toggle('hidden', !canDraw);
+    take.classList.toggle('neutral', !pending);
+    if (canDraw) take.textContent = pending ? `Prendre +${g.pending.count}` : 'Piocher';
     pile.setAttribute('aria-label', pending && myTurn ? `Prendre les ${g.pending.count} cartes` : 'Piocher');
   }
 
@@ -1447,7 +1449,7 @@
     else if (myTurn && g.pending) {
       const what = g.pending.min <= 2 ? 'un +2 ou un +4' : 'un +4';
       text = g.playable.length ? `⚠️ +${g.pending.count} pour vous : renvoyez ${what}, ou prenez` : `⚠️ +${g.pending.count} pour vous : touchez la pioche`;
-    } else if (myTurn) text = g.hasDrawn ? 'Posez la carte piochée ou passez' : g.playable.length ? 'À vous de jouer !' : 'Aucune carte jouable : piochez';
+    } else if (myTurn) text = g.hasDrawn ? 'Posez la carte piochée ou passez' : g.playable.length ? 'À vous : posez une carte ou piochez' : 'Aucune carte jouable : piochez';
     else if (g.pending) text = `${nameOf(g, g.turnPlayerId)} doit renvoyer ou prendre +${g.pending.count}…`;
     else text = `${nameOf(g, g.turnPlayerId)} réfléchit…`;
     main.textContent = text;

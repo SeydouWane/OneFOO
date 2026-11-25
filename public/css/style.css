@@ -525,6 +525,8 @@ input.shake, .shake { animation: shake 0.4s; }
   box-shadow: 0 4px 14px rgba(0,0,0,0.5);
 }
 .game.expanded .pending-badge { font-size: 15px; padding: 4px 12px; }
+.pile-take.neutral { background: rgba(16, 15, 36, 0.82); border: 1.5px solid rgba(255,255,255,0.35); font-size: 13px; font-weight: 600; }
+.draw-pile.can .pile-take.neutral { background: var(--grad); color: #1b0f1f; border-color: transparent; }
 
 /* ---------- joueurs ayant terminé (la partie continue pour les autres) ---------- */
 .opp.done .opp-av { opacity: 0.6; filter: saturate(0.6); }
